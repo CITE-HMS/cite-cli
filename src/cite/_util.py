@@ -1,10 +1,9 @@
 import os
-from typing import Optional
 
 PATHS = ["C:/UserData"]
 
 
-def find_userd(noinput: bool = False) -> Optional[str]:
+def find_userd(noinput: bool = False) -> str | None:
     # detect user directory
     userd = None
     for path in PATHS:

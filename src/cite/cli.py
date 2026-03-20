@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Optional
 
 import typer
 
@@ -17,7 +16,7 @@ def _show_version_and_exit(value: bool) -> None:
 
 @app.callback()
 def _main(
-    version: Optional[bool] = typer.Option(
+    version: bool | None = typer.Option(
         None,
         "-v",
         "--version",
