@@ -1,14 +1,13 @@
 import os
 
-PATHS = ["C:/UserData"]
-
 
 def find_userd(noinput: bool = False) -> str | None:
     # detect user directory
     userd = None
-    for path in PATHS:
-        if os.path.isdir(path):
-            userd = path
+    for i in ("D:/", "E:/", "F:/"):
+        _d = os.path.join(i, "User Data")
+        if os.path.isdir(_d):
+            userd = _d
             break
     if not userd and not noinput:
         userd = ""

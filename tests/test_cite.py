@@ -1,8 +1,13 @@
 import time
 
 import pytest
+from typer.testing import CliRunner
 
+import cite._cleanup as _cleanup
 from cite._cleanup import iter_empty_dirs, iter_old_files
+from cite.cli import DEFAULT_PATHS, app
+
+runner = CliRunner()
 
 
 @pytest.fixture()
@@ -77,3 +82,64 @@ def test_iter_empty_dirs_no_empty(tmp_path):
     (tmp_path / "file.txt").write_text("content")
     result = list(iter_empty_dirs(tmp_path))
     assert result == []
+
+
+# --- CLI tests ---
+
+
+def test_clean_explicit_directory_no_old_files(tmp_path):
+    """clean with an explicit directory containing only recent files."""
+    (tmp_path / "recent.txt").write_text("hi")
+    result = runner.invoke(app, ["clean", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "No files found" in result.output
+
+
+def test_clean_explicit_directory_dry_run(tmp_path, monkeypatch):
+    """clean --dry-run should list files but not delete them."""
+    f = tmp_path / "old.txt"
+    f.write_text("data")
+    monkeypatch.setattr(_cleanup, "TIME", time.time() + 60 * 86400)
+
+    result = runner.invoke(app, ["clean", str(tmp_path), "--dry-run"])
+    assert result.exit_code == 0
+    assert "Would delete" in result.output
+    assert f.exists()
+
+
+def test_clean_explicit_directory_force(tmp_path, monkeypatch):
+    """clean --force should delete old files without prompting."""
+    f = tmp_path / "old.txt"
+    f.write_text("data")
+    monkeypatch.setattr(_cleanup, "TIME", time.time() + 60 * 86400)
+
+    result = runner.invoke(app, ["clean", str(tmp_path), "--force"])
+    assert result.exit_code == 0
+    assert "Deleted" in result.output
+    assert not f.exists()
+
+
+def test_clean_nonexistent_directory():
+    """clean with a path that doesn't exist should report an error."""
+    result = runner.invoke(app, ["clean", "/no/such/path"])
+    assert result.exit_code == 0
+    assert "does not exist" in result.output
+
+
+def test_clean_default_paths_uses_defaults(tmp_path, monkeypatch):
+    """clean with no directory argument should use DEFAULT_PATHS."""
+    (tmp_path / "recent.txt").write_text("hi")
+    monkeypatch.setattr("cite.cli.DEFAULT_PATHS", [str(tmp_path)])
+
+    result = runner.invoke(app, ["clean"])
+    assert result.exit_code == 0
+    assert "Cleaning default path" in result.output
+
+
+def test_clean_default_paths_none_exist(monkeypatch):
+    """clean with no args and no existing default paths should error."""
+    monkeypatch.setattr("cite.cli.DEFAULT_PATHS", ["/no/such/path"])
+
+    result = runner.invoke(app, ["clean"])
+    assert result.exit_code == 1
+    assert "No default directories found" in result.output
