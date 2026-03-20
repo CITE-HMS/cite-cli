@@ -3,7 +3,7 @@ from typing import Optional
 
 import typer
 
-import nic
+import cite
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 STATE = {"verbose": False}
@@ -11,7 +11,7 @@ STATE = {"verbose": False}
 
 def _show_version_and_exit(value: bool) -> None:
     if value:
-        typer.echo(f"nictool v{nic.__version__}")
+        typer.echo(f"cite-cli v{cite.__version__}")
         raise typer.Exit()
 
 
@@ -25,23 +25,23 @@ def _main(
         help="Show version and exit.",
     ),
 ) -> None:
-    """Command line tool for the Nikon Imaging Center at HMS.
+    """Command line tool for CITE at HMS.
 
     v{version}
     """
 
 
 _main.__doc__ = typer.style(
-    (_main.__doc__ or "").format(version=nic.__version__), fg="bright_yellow"
+    (_main.__doc__ or "").format(version=cite.__version__), fg="bright_yellow"
 )
 
 
 @app.command()
 def update() -> None:
-    """Update nictool itself."""
+    """Update cite-cli itself."""
     import subprocess
 
-    url = "https://github.com/tlambert03/nictool/archive/refs/heads/main.zip"
+    url = "https://github.com/CITE-HMS/cite-cli/archive/refs/heads/main.zip"
     subprocess.run(
         ["pip", "install", "--upgrade", "--force-reinstall", url],
         stderr=subprocess.DEVNULL,
@@ -55,11 +55,11 @@ def clean(
         help="The directory to cleanup. May be a local path or an smb:// path."
         "If an smb:// path, the user name will default to 'Admin', unless it is "
         "specified in the path (e.g. 'Admin@server'). It is recommended to set "
-        "the password as an eviornment variable: NIC_PASSWORD='mypassword'. "
-        "For example: NIC_PASSWORD='mypassword' nic clean smb://Admin@10.10.10.10/share",
+        "the password as an environment variable: CITE_PASSWORD='mypassword'. "
+        "For example: CITE_PASSWORD='mypassword' cite clean smb://Admin@10.10.10.10/share",
     ),
     days: float = typer.Option(
-        60,
+        30,
         "-d",
         "--days",
         metavar="FLOAT",
@@ -84,7 +84,7 @@ def clean(
     """✨ Delete files in a given directory older than a certain age."""
     context = None
     if directory.startswith("smb://"):
-        from nic.remote import mount_smb
+        from cite.remote import mount_smb
 
         server, *rest = directory[6:].split("/")
         share = rest[0] if rest else "data"
@@ -109,7 +109,7 @@ def clean(
     print(f"cleaninig directory: {directory!r}")
     try:
         # grab list of old files
-        old_files = list(nic.iter_old_files(_directory, days, skip=skip))
+        old_files = list(cite.iter_old_files(_directory, days, skip=skip))
 
         # if there are no old files, exit
         if not old_files:
@@ -152,7 +152,7 @@ def clean(
 
         if delete_empty_dirs:
             typer.secho("---------------------------------------", fg=(110, 110, 110))
-            for empty in nic.iter_empty_dirs(_directory, skip=skip):
+            for empty in cite.iter_empty_dirs(_directory, skip=skip):
                 try:
                     empty.rmdir()
                     typer.secho(f"📂 Deleted empty directory {empty}", fg="green")
@@ -195,7 +195,7 @@ def clean_many(
     as values.
 
     Example:
-    nic clean-many ~/Dropbox\ \(HMS\)/NIC\ Team/Equipment/stations_ips.json
+    cite clean-many ~/Dropbox\ \(HMS\)/CITE\ Team/Equipment/stations_ips.json
     """
     import json
     from concurrent.futures import ThreadPoolExecutor

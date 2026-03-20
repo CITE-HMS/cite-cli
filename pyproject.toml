@@ -5,8 +5,8 @@ build-backend = "setuptools.build_meta"
 
 # https://peps.python.org/pep-0621/
 [project]
-name = "nictool"
-description = "tools for NIC@HMS"
+name = "cite-cli"
+description = "tools for CITE@HMS"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { file = "LICENSE" }
@@ -46,12 +46,12 @@ dev = [
 ]
 
 [project.urls]
-homepage = "https://github.com/tlambert03/nictool"
-repository = "https://github.com/tlambert03/nictool"
+homepage = "https://github.com/CITE-HMS/cite-cli"
+repository = "https://github.com/CITE-HMS/cite-cli"
 
 # same as console_scripts entry point
 [project.scripts]
-nic = "nic.cli:main"
+cite = "cite.cli:main"
 
 # Entry points
 # https://peps.python.org/pep-0621/#entry-points
@@ -64,12 +64,12 @@ include-package-data = true
 packages = { find = { where = ["src"], exclude = [] } }
 
 [tool.setuptools.dynamic]
-version = {attr = "nic.__version__"}
+version = {attr = "cite.__version__"}
 
 # https://pycqa.github.io/isort/docs/configuration/options.html
 [tool.isort]
 profile = "black"
-src_paths = ["src/nic", "tests"]
+src_paths = ["src/cite", "tests"]
 
 # https://flake8.pycqa.org/en/latest/user/options.html
 # https://gitlab.com/durko/flake8-pyprojecttoml
@@ -92,7 +92,7 @@ per-file-ignores = ["tests/*:D"]
 
 # http://www.pydocstyle.org/en/stable/usage.html
 [tool.pydocstyle]
-match_dir = "src/nic"
+match_dir = "src/cite"
 convention = "numpy"
 add_select = "D402,D415,D417"
 ignore = "D100,D213,D401,D413,D107"
@@ -105,7 +105,7 @@ filterwarnings = ["error"]
 
 # https://mypy.readthedocs.io/en/stable/config_file.html
 [tool.mypy]
-files = "src/nic/"
+files = "src/cite/"
 strict = true
 disallow_any_generics = false
 disallow_subclassing_any = false

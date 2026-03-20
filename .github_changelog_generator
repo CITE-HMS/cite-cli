@@ -1,5 +1,5 @@
-user=tlambert03
-project=nictool
+user=CITE-HMS
+project=cite-cli
 issues=false
 exclude-labels=duplicate,question,invalid,wontfix,hide
 add-sections={"tests":{"prefix":"**Tests & CI:**","labels":["tests"]}, "documentation":{"prefix":"**Documentation:**", "labels":["documentation"]}}

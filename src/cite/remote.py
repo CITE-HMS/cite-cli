@@ -43,7 +43,7 @@ def mount_smb(
     password: str | None = None,
 ) -> Iterator[str]:
     """Mount smb share at `//server/share` to a temporary directory."""
-    password = password or os.getenv("NIC_PASSWORD") or getpass("NIC Password: ")
+    password = password or os.getenv("CITE_PASSWORD") or getpass("CITE Password: ")
     if not password:
         raise ValueError("Password required")
 
