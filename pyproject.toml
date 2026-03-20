@@ -1,101 +1,56 @@
 # https://peps.python.org/pep-0517/
 [build-system]
-requires = ["setuptools>=45", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
 
 # https://peps.python.org/pep-0621/
 [project]
-name = "nictool"
-description = "tools for NIC@HMS"
+name = "cite-cli"
+description = "tools for CITE@HMS"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ email = "talley.lambert@gmail.com" }, { name = "Talley Lambert" }]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dynamic = ["version"]
-dependencies = ["typer[all]"]
+dependencies = ["typer"]
 
 # extras
 # https://peps.python.org/pep-0621/#dependencies-optional-dependencies
 [project.optional-dependencies]
 test = ["pytest>=6.0", "pytest-cov"]
 dev = [
-    "black",
-    "cruft",
-    "flake8-bugbear",
-    "flake8-docstrings",
-    "flake8-pyprojecttoml",
-    "flake8-typing-imports",
-    "flake8",
+    "cite-cli[test]",
     "ipython",
-    "isort",
     "mypy",
     "pdbpp",
     "pre-commit",
-    "pydocstyle",
-    "pytest-cov",
-    "pytest",
     "rich",
+    "ruff",
 ]
 
 [project.urls]
-homepage = "https://github.com/tlambert03/nictool"
-repository = "https://github.com/tlambert03/nictool"
+homepage = "https://github.com/CITE-HMS/cite-cli"
+repository = "https://github.com/CITE-HMS/cite-cli"
 
 # same as console_scripts entry point
 [project.scripts]
-nic = "nic.cli:main"
+cite = "cite.cli:main"
 
-# Entry points
-# https://peps.python.org/pep-0621/#entry-points
-# [project.entry-points."spam.magical"]
-# tomatoes = "spam:main_tomatoes"
+# https://hatch.pypa.io/latest/config/build/
+[tool.hatch.version]
+source = "vcs"
 
-# https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html
-[tool.setuptools]
-include-package-data = true
-packages = { find = { where = ["src"], exclude = [] } }
-
-[tool.setuptools.dynamic]
-version = {attr = "nic.__version__"}
-
-# https://pycqa.github.io/isort/docs/configuration/options.html
-[tool.isort]
-profile = "black"
-src_paths = ["src/nic", "tests"]
-
-# https://flake8.pycqa.org/en/latest/user/options.html
-# https://gitlab.com/durko/flake8-pyprojecttoml
-[tool.flake8]
-exclude = "docs,.eggs,examples,_version.py"
-max-line-length = 88
-ignore = "E203"
-min-python-version = "3.8.0"
-docstring-convention = "all" # use numpy convention, while allowing D417
-extend-ignore = """
-E203  # whitespace before ':'
-D107,D203,D212,D213,D402,D413,D415,D416  # numpy
-D100  # missing docstring in public module
-D401  # imperative mood
-W503  # line break before binary operator
-B008  # function calls in default arguments
-"""
-per-file-ignores = ["tests/*:D"]
-
-
-# http://www.pydocstyle.org/en/stable/usage.html
-[tool.pydocstyle]
-match_dir = "src/nic"
-convention = "numpy"
-add_select = "D402,D415,D417"
-ignore = "D100,D213,D401,D413,D107"
+[tool.hatch.build.targets.wheel]
+packages = ["src/cite"]
 
 # https://docs.pytest.org/en/6.2.x/customize.html
 [tool.pytest.ini_options]
@@ -105,7 +60,7 @@ filterwarnings = ["error"]
 
 # https://mypy.readthedocs.io/en/stable/config_file.html
 [tool.mypy]
-files = "src/nic/"
+files = "src/cite/"
 strict = true
 disallow_any_generics = false
 disallow_subclassing_any = false
@@ -116,6 +71,12 @@ pretty = true
 module = ['smb.*', 'tqdm.*']
 ignore_missing_imports = true
 
+# https://docs.astral.sh/ruff/
+[tool.ruff]
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "RUF"]
 
 # https://coverage.readthedocs.io/en/6.4/config.html
 [tool.coverage.report]
@@ -125,26 +86,3 @@ exclude_lines = [
     "@overload",
     "except ImportError",
 ]
-
-# https://github.com/cruft/cruft
-[tool.cruft]
-skip = ["tests"]
-
-# https://github.com/mgedmin/check-manifest#configuration
-[tool.check-manifest]
-ignore = [
-    ".cruft.json",
-    ".flake8",
-    ".github_changelog_generator",
-    ".pre-commit-config.yaml",
-    "tests/**/*",
-    "tox.ini",
-]
-
-# https://python-semantic-release.readthedocs.io/en/latest/configuration.html
-[tool.semantic_release]
-version_source = "tag_only"
-branch = "main"
-changelog_sections = "feature,fix,breaking,documentation,performance,chore,:boom:,:sparkles:,:children_crossing:,:lipstick:,:iphone:,:egg:,:chart_with_upwards_trend:,:ambulance:,:lock:,:bug:,:zap:,:goal_net:,:alien:,:wheelchair:,:speech_balloon:,:mag:,:apple:,:penguin:,:checkered_flag:,:robot:,:green_apple:,Other"
-# commit_parser=semantic_release.history.angular_parser
-build_command = "pip install build && python -m build"

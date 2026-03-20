@@ -1,14 +1,14 @@
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator, Tuple, Union
 
 SEC_PER_DAY = 60 * 60 * 24
 TIME = time.time()
 
 
 def iter_old_files(
-    directory: Union[str, Path], min_age: float = 30, skip: str = ""
-) -> Iterator[Tuple[Path, float]]:
+    directory: str | Path, min_age: float = 30, skip: str = ""
+) -> Iterator[tuple[Path, float]]:
     """Iterate over files in `directory` that are greater than `min_age` days old.
 
     Parameters
@@ -36,7 +36,7 @@ def iter_old_files(
                 yield path, days_old
 
 
-def iter_empty_dirs(directory: Union[str, Path], skip: str = "") -> Iterator[Path]:
+def iter_empty_dirs(directory: str | Path, skip: str = "") -> Iterator[Path]:
     """Iterate over empty directories nested arbitrarily deep in `directory`."""
     for path in Path(directory).glob("**/*"):
         if (

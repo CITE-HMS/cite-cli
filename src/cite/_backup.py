@@ -4,7 +4,6 @@ import os
 import socket
 import zipfile
 from datetime import datetime
-from typing import List, Optional
 
 from smb.SMBConnection import OperationFailure, SMBConnection, SMBTimeout
 from tqdm import tqdm
@@ -28,7 +27,7 @@ STATION_NAME = socket.gethostname()
 
 def connect_to_smb(
     servername: str = "nucleus.med.harvard.edu", share: str = "nicadmin", tries: int = 4
-) -> Optional[SMBConnection]:
+) -> SMBConnection | None:
     print(f"Enter login credentials for {servername}/{share}")
     addr = socket.gethostbyname(servername)
     _try = 0
@@ -59,7 +58,7 @@ def create_remote_dir(conn: "SMBConnection", share: str, dst: str) -> None:
 
 def backup_folders(
     conn: "SMBConnection",
-    folderlist: List[str] = BACKUP,
+    folderlist: list[str] = BACKUP,
     share: str = "nicadmin",
     dst: str = "/BackUp/AUTO/",
 ) -> None:
@@ -72,7 +71,7 @@ def backup_folders(
                 continue
             _dir = src.replace(":/", "_").replace("\\", "_").replace("/", "_")
             _dir += ".zip"
-            transfers: List[str] = []
+            transfers: list[str] = []
             for root, _, files in os.walk(src):
                 transfers.extend(os.path.join(root, file) for file in files)
             print(f"Zipping {_dir}...")

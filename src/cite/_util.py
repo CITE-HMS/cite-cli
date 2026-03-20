@@ -1,8 +1,7 @@
 import os
-from typing import Optional
 
 
-def find_userd(noinput: bool = False) -> Optional[str]:
+def find_userd(noinput: bool = False) -> str | None:
     # detect user directory
     userd = None
     for i in ("D:/", "E:/", "F:/"):

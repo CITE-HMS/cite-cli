@@ -1,23 +1,25 @@
 from pathlib import Path
-from typing import Optional
 
 import typer
 
-import nic
+import cite
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 STATE = {"verbose": False}
 
+# List of default paths to clean if no path is specified.
+DEFAULT_PATHS = ["C:/UserData"]
+
 
 def _show_version_and_exit(value: bool) -> None:
     if value:
-        typer.echo(f"nictool v{nic.__version__}")
+        typer.echo(f"cite-cli v{cite.__version__}")
         raise typer.Exit()
 
 
 @app.callback()
 def _main(
-    version: Optional[bool] = typer.Option(
+    version: bool | None = typer.Option(
         None,
         "-v",
         "--version",
@@ -25,23 +27,23 @@ def _main(
         help="Show version and exit.",
     ),
 ) -> None:
-    """Command line tool for the Nikon Imaging Center at HMS.
+    """Command line tool for CITE at HMS.
 
     v{version}
     """
 
 
 _main.__doc__ = typer.style(
-    (_main.__doc__ or "").format(version=nic.__version__), fg="bright_yellow"
+    (_main.__doc__ or "").format(version=cite.__version__), fg="bright_yellow"
 )
 
 
 @app.command()
 def update() -> None:
-    """Update nictool itself."""
+    """Update cite-cli itself."""
     import subprocess
 
-    url = "https://github.com/tlambert03/nictool/archive/refs/heads/main.zip"
+    url = "https://github.com/CITE-HMS/cite-cli/archive/refs/heads/main.zip"
     subprocess.run(
         ["pip", "install", "--upgrade", "--force-reinstall", url],
         stderr=subprocess.DEVNULL,
@@ -50,16 +52,17 @@ def update() -> None:
 
 @app.command()
 def clean(
-    directory: str = typer.Argument(
-        ...,
-        help="The directory to cleanup. May be a local path or an smb:// path."
+    directory: str | None = typer.Argument(
+        None,
+        help="The directory to cleanup. May be a local path or an smb:// path. "
+        "If omitted, all default paths will be cleaned. "
         "If an smb:// path, the user name will default to 'Admin', unless it is "
         "specified in the path (e.g. 'Admin@server'). It is recommended to set "
-        "the password as an eviornment variable: NIC_PASSWORD='mypassword'. "
-        "For example: NIC_PASSWORD='mypassword' nic clean smb://Admin@10.10.10.10/share",
+        "the password as an environment variable: CITE_PASSWORD='mypassword'. "
+        "For example: CITE_PASSWORD='mypassword' cite clean smb://Admin@10.10.10.10/share",
     ),
     days: float = typer.Option(
-        60,
+        30,
         "-d",
         "--days",
         metavar="FLOAT",
@@ -81,10 +84,31 @@ def clean(
     delete_empty_dirs: bool = typer.Option(True, help="Delete empty directories."),
     skip: str = typer.Option("delete", help="Don't delete files with this string."),
 ) -> None:
-    """✨ Delete files in a given directory older than a certain age."""
+    """Delete files in a given directory older than a certain age."""
+    if directory is None:
+        dirs = [d for d in DEFAULT_PATHS if Path(d).is_dir()]
+        if not dirs:
+            typer.secho("No default directories found on this machine.", fg="red")
+            raise typer.Exit(1)
+        for d in dirs:
+            typer.secho(f"Cleaning default path: {d!r}", fg="bright_blue", bold=True)
+            _clean_directory(d, days, dry_run, force, delete_empty_dirs, skip)
+    else:
+        _clean_directory(directory, days, dry_run, force, delete_empty_dirs, skip)
+
+
+def _clean_directory(
+    directory: str,
+    days: float,
+    dry_run: bool,
+    force: bool,
+    delete_empty_dirs: bool,
+    skip: str,
+) -> None:
+    """Clean a single directory."""
     context = None
     if directory.startswith("smb://"):
-        from nic.remote import mount_smb
+        from cite.remote import mount_smb
 
         server, *rest = directory[6:].split("/")
         share = rest[0] if rest else "data"
@@ -104,12 +128,12 @@ def clean(
                 typer.secho(f"Path is not a directory: {directory!r}", fg="red")
             else:
                 typer.secho(f"Directory does not exist: {directory!r}", fg="red")
-            raise typer.Exit(0)
+            return
 
-    print(f"cleaninig directory: {directory!r}")
+    print(f"Cleaning directory: {directory!r}")
     try:
         # grab list of old files
-        old_files = list(nic.iter_old_files(_directory, days, skip=skip))
+        old_files = list(cite.iter_old_files(_directory, days, skip=skip))
 
         # if there are no old files, exit
         if not old_files:
@@ -118,14 +142,14 @@ def clean(
                 fg="green",
                 bold=True,
             )
-            raise typer.Exit(0)
+            return
 
         # if dry_run, just print what would be deleted
         if dry_run:
             for old_file, age in old_files:
                 name_age = f"{old_file} ({age:.1f} days old)"
                 typer.secho(f"Would delete {name_age}", fg=(140, 140, 140))
-            raise typer.Exit(0)
+            return
 
         # if force was not specified, ask for confirmation
         if not force:
@@ -138,10 +162,10 @@ def clean(
             typer.confirm(msg, abort=True)
 
         # actually delete files
+        count = 0
+        errs = 0
         for old_file, age in old_files:
             name_age = f"{old_file} ({age:.1f} days old)"
-            count = 0
-            errs = 0
             try:
                 old_file.unlink()
                 typer.secho(f"Deleted {name_age}", fg="green")
@@ -152,10 +176,10 @@ def clean(
 
         if delete_empty_dirs:
             typer.secho("---------------------------------------", fg=(110, 110, 110))
-            for empty in nic.iter_empty_dirs(_directory, skip=skip):
+            for empty in cite.iter_empty_dirs(_directory, skip=skip):
                 try:
                     empty.rmdir()
-                    typer.secho(f"📂 Deleted empty directory {empty}", fg="green")
+                    typer.secho(f"Deleted empty directory {empty}", fg="green")
                 except Exception as e:
                     typer.secho(
                         f"Failed to delete empty directory {empty}: {e}",
@@ -165,12 +189,11 @@ def clean(
 
         typer.secho("---------------------------------------", fg=(160, 160, 160))
 
-        # print summary and exit
+        # print summary
         if count:
             typer.secho(f"Deleted {count} files", fg="green", bold=True)
         if errs:
-            typer.secho(f"Unabled to delete {errs} files.", fg="red", bold=True)
-        raise typer.Exit(1 if errs else 0)
+            typer.secho(f"Unable to delete {errs} files.", fg="red", bold=True)
     finally:
         if context:
             context.__exit__(None, None, None)
@@ -195,7 +218,7 @@ def clean_many(
     as values.
 
     Example:
-    nic clean-many ~/Dropbox\ \(HMS\)/NIC\ Team/Equipment/stations_ips.json
+    cite clean-many ~/Dropbox\ \(HMS\)/CITE\ Team/Equipment/stations_ips.json
     """
     import json
     from concurrent.futures import ThreadPoolExecutor

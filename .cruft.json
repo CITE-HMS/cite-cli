@@ -7,9 +7,9 @@
       "full_name": "Talley Lambert",
       "email": "talley.lambert@gmail.com",
       "github_username": "tlambert03",
-      "project_name": "nictool",
-      "project_slug": "nictool",
-      "project_short_description": "tools for NIC@HMS",
+      "project_name": "cite-cli",
+      "project_slug": "cite-cli",
+      "project_short_description": "tools for CITE@HMS",
       "pypi_username": "talley",
       "version_control": "setuptools-scm",
       "_copy_without_render": [
