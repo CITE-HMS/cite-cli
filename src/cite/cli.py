@@ -8,7 +8,18 @@ app = typer.Typer(no_args_is_help=True, add_completion=False)
 STATE = {"verbose": False}
 
 # List of default paths to clean if no path is specified.
-DEFAULT_PATHS = ["C:/UserData"]
+DEFAULT_PATHS = [
+    # "C:/UserData",  # s1
+    # "C:/UserData",  # s2
+    # "C:/UserData",  # s3
+    # "C:/UserData",  # s5
+    # "C:/UserData",  # s8
+    # "C:/UserData",  # s9
+    # "C:/UserData",  # s10
+    # "C:/UserData",  # s14
+    "F:/UserData",  # s15
+    # "C:/UserData",  # s18
+]
 
 
 def _show_version_and_exit(value: bool) -> None:
