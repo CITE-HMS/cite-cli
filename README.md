@@ -8,7 +8,6 @@
 
 command line tools for CITE@HMS
 
-Copy thsi line in the Windows Task Scheduler to delete filef older than 25 days:
+Copy this line in the Windows Task Scheduler to delete files older than 25 days:
 
 `uvx --from git+https://github.com/CITE-HMS/cite-cli cite -d 25`
-

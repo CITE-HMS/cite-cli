@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -212,9 +213,10 @@ def _clean_directory(
 
 @app.command()
 def clean_many(
-    ip_file: Path = typer.Argument(
-        ..., dir_okay=False, file_okay=True, resolve_path=True, exists=True
-    ),
+    ip_file: Annotated[
+        Path,
+        typer.Argument(dir_okay=False, file_okay=True, resolve_path=True, exists=True),
+    ],
     force: bool = typer.Option(
         False,
         "-f",

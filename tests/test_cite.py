@@ -5,7 +5,7 @@ from typer.testing import CliRunner
 
 import cite._cleanup as _cleanup
 from cite._cleanup import iter_empty_dirs, iter_old_files
-from cite.cli import DEFAULT_PATHS, app
+from cite.cli import app
 
 runner = CliRunner()
 

@@ -50,7 +50,7 @@ def connect_to_smb(
 
 def create_remote_dir(conn: "SMBConnection", share: str, dst: str) -> None:
     L = [i for i in dst.split("/") if i]
-    for i, x in enumerate(L):
+    for i, _x in enumerate(L):
         _dst = "/".join(L[: i + 1])
         with contextlib.suppress(OperationFailure):
             conn.createDirectory(share, _dst)
@@ -83,5 +83,5 @@ def backup_folders(
         try:
             conn.storeFile(share, dst + outname, f)
         except Exception as e:
-            print(f"BACKUP FAILED: {str(e)}")
+            print(f"BACKUP FAILED: {e!s}")
     os.remove(outname)
