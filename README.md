@@ -9,6 +9,6 @@
 command line tools for CITE@HMS
 
 In Task Scheduler, create a new task and set the action to `Start a program` with the following command:
-- `Program/script`: `C:\Windows\System32\cmd.exe`
-- `Add arguments (optional)`: `/c "C:\Users\User\.local\bin\uv.exe tool run --from git+https://github.com/CITE-HMS/cite-cli cite clean -d 25 -f > C:\cite_cli_log.log 2>&1"
+- Program/script: `C:\Windows\System32\cmd.exe`
+- Add arguments (optional): `/c "C:\Users\User\.local\bin\uv.exe tool run --from git+https://github.com/CITE-HMS/cite-cli cite clean -d 25 -f > C:\cite_cli_log.log 2>&1"`
 
