@@ -17,18 +17,16 @@ def _ts() -> str:
 
 # List of default paths to clean if no path is specified.
 DEFAULT_PATHS = [
-    # "C:/UserData",  # s1
-    # "C:/UserData",  # s2
+    "D:/User_Data",  # s1, s2, s8, s9, s14
+    "E:/User_Data",  # s1, s2
+    "F:/User_Data",  # s1, s2, s5
     # "C:/UserData",  # s3
-    # "C:/UserData",  # s5
     "C:/User_Data",  # s8
-    "D:/User_Data",  # s8
-    # "C:/UserData",  # s9
     # "C:/UserData",  # s10
-    # "C:/UserData",  # s14
     "F:/UserData",  # s15
     # "C:/UserData",  # s18
 ]
+
 
 
 def _show_version_and_exit(value: bool) -> None:
