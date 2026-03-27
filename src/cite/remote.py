@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from getpass import getpass
-from typing import Iterator
 from urllib.parse import quote
 
 # To add an SMB share for an NIC microscope:
