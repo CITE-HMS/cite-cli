@@ -8,6 +8,13 @@ import cite
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 STATE = {"verbose": False}
 
+
+def _ts() -> str:
+    from datetime import datetime
+
+    return datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")
+
+
 # List of default paths to clean if no path is specified.
 DEFAULT_PATHS = [
     # "C:/UserData",  # s1
@@ -104,7 +111,7 @@ def clean(
             typer.secho("No default directories found on this machine.", fg="red")
             raise typer.Exit(1)
         for d in dirs:
-            typer.secho(f"Cleaning default path: {d!r}", fg="bright_blue", bold=True)
+            typer.secho(f"{_ts()}Cleaning default path: {d!r}", fg="bright_blue", bold=True)
             _clean_directory(d, days, dry_run, force, delete_empty_dirs, skip)
     else:
         _clean_directory(directory, days, dry_run, force, delete_empty_dirs, skip)
@@ -133,17 +140,17 @@ def _clean_directory(
 
         context = mount_smb(server, share, user)
         _directory = Path(context.__enter__())
-        typer.secho("loaded remote directory")
+        typer.secho(f"{_ts()}loaded remote directory")
     else:
         _directory = Path(directory).resolve()
         if not _directory.is_dir():
             if _directory.exists():
-                typer.secho(f"Path is not a directory: {directory!r}", fg="red")
+                typer.secho(f"{_ts()}Path is not a directory: {directory!r}", fg="red")
             else:
-                typer.secho(f"Directory does not exist: {directory!r}", fg="red")
+                typer.secho(f"{_ts()}Directory does not exist: {directory!r}", fg="red")
             return
 
-    print(f"Cleaning directory: {directory!r}")
+    typer.secho(f"{_ts()}Cleaning directory: {directory!r}")
     try:
         # grab list of old files
         old_files = list(cite.iter_old_files(_directory, days, skip=skip))
@@ -151,7 +158,7 @@ def _clean_directory(
         # if there are no old files, exit
         if not old_files:
             typer.secho(
-                f"No files found in {directory!r} older than {days} days!",
+                f"{_ts()}No files found in {directory!r} older than {days} days!",
                 fg="green",
                 bold=True,
             )
@@ -161,7 +168,7 @@ def _clean_directory(
         if dry_run:
             for old_file, age in old_files:
                 name_age = f"{old_file} ({age:.1f} days old)"
-                typer.secho(f"Would delete {name_age}", fg=(140, 140, 140))
+                typer.secho(f"{_ts()}Would delete {name_age}", fg=(140, 140, 140))
             return
 
         # if force was not specified, ask for confirmation
@@ -181,10 +188,10 @@ def _clean_directory(
             name_age = f"{old_file} ({age:.1f} days old)"
             try:
                 old_file.unlink()
-                typer.secho(f"Deleted {name_age}", fg="green")
+                typer.secho(f"{_ts()}Deleted {name_age}", fg="green")
                 count += 1
             except Exception as e:
-                typer.secho(f"Failed to delete {name_age}: {e}", err=True, fg="red")
+                typer.secho(f"{_ts()}Failed to delete {name_age}: {e}", err=True, fg="red")
                 errs += 1
 
         if delete_empty_dirs:
@@ -192,10 +199,10 @@ def _clean_directory(
             for empty in cite.iter_empty_dirs(_directory, skip=skip):
                 try:
                     empty.rmdir()
-                    typer.secho(f"Deleted empty directory {empty}", fg="green")
+                    typer.secho(f"{_ts()}Deleted empty directory {empty}", fg="green")
                 except Exception as e:
                     typer.secho(
-                        f"Failed to delete empty directory {empty}: {e}",
+                        f"{_ts()}Failed to delete empty directory {empty}: {e}",
                         err=True,
                         fg="red",
                     )
@@ -204,9 +211,9 @@ def _clean_directory(
 
         # print summary
         if count:
-            typer.secho(f"Deleted {count} files", fg="green", bold=True)
+            typer.secho(f"{_ts()}Deleted {count} files", fg="green", bold=True)
         if errs:
-            typer.secho(f"Unable to delete {errs} files.", fg="red", bold=True)
+            typer.secho(f"{_ts()}Unable to delete {errs} files.", fg="red", bold=True)
     finally:
         if context:
             context.__exit__(None, None, None)
