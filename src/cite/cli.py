@@ -14,7 +14,8 @@ DEFAULT_PATHS = [
     # "C:/UserData",  # s2
     # "C:/UserData",  # s3
     # "C:/UserData",  # s5
-    # "C:/UserData",  # s8
+    "C:/User_Data",  # s8
+    "D:/User_Data",  # s8
     # "C:/UserData",  # s9
     # "C:/UserData",  # s10
     # "C:/UserData",  # s14
