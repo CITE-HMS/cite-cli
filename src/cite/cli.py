@@ -18,9 +18,8 @@ def _ts() -> str:
 # List of default paths to clean if no path is specified.
 DEFAULT_PATHS = [
     "D:/User_Data",  # s1, s2, s8, s9, s14
-    "E:/User_Data",  # s1, s2
+    "E:/User_Data",  # s1, s2, s3
     "F:/User_Data",  # s1, s2, s5
-    # "C:/UserData",  # s3
     "C:/User_Data",  # s8
     # "C:/UserData",  # s10
     "F:/UserData",  # s15
