@@ -17,14 +17,13 @@ def _ts() -> str:
 
 # List of default paths to clean if no path is specified.
 DEFAULT_PATHS = [
-    "D:/User_Data",  # s1, s2, s8, s9, s14
+    "D:/User_Data",  # s1, s2, s8, s9, s10, s14
     "E:/User_Data",  # s1, s2, s3, s18
     "F:/User_Data",  # s1, s2, s5
     "C:/User_Data",  # s8
-    # "C:/UserData",  # s10
+    "Z:/User_Data",  # s10
     "F:/UserData",  # s15
 ]
-
 
 
 def _show_version_and_exit(value: bool) -> None:
@@ -107,7 +106,9 @@ def clean(
             typer.secho("No default directories found on this machine.", fg="red")
             raise typer.Exit(1)
         for d in dirs:
-            typer.secho(f"{_ts()}Cleaning default path: {d!r}", fg="bright_blue", bold=True)
+            typer.secho(
+                f"{_ts()}Cleaning default path: {d!r}", fg="bright_blue", bold=True
+            )
             _clean_directory(d, days, dry_run, force, delete_empty_dirs, skip)
     else:
         _clean_directory(directory, days, dry_run, force, delete_empty_dirs, skip)
@@ -187,7 +188,9 @@ def _clean_directory(
                 typer.secho(f"{_ts()}Deleted {name_age}", fg="green")
                 count += 1
             except Exception as e:
-                typer.secho(f"{_ts()}Failed to delete {name_age}: {e}", err=True, fg="red")
+                typer.secho(
+                    f"{_ts()}Failed to delete {name_age}: {e}", err=True, fg="red"
+                )
                 errs += 1
 
         if delete_empty_dirs:
