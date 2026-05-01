@@ -1,3 +1,4 @@
+import stat
 from pathlib import Path
 from typing import Annotated
 
@@ -184,7 +185,13 @@ def _clean_directory(
         for old_file, age in old_files:
             name_age = f"{old_file} ({age:.1f} days old)"
             try:
-                old_file.unlink()
+                try:
+                    old_file.unlink()
+                except PermissionError:
+                    # On Windows, files with the read-only attribute raise
+                    # PermissionError on unlink even when ACLs allow delete.
+                    old_file.chmod(stat.S_IWRITE)
+                    old_file.unlink()
                 typer.secho(f"{_ts()}Deleted {name_age}", fg="green")
                 count += 1
             except Exception as e:
