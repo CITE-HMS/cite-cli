@@ -28,3 +28,4 @@ repos:
         files: "^src/"
         additional_dependencies:
           - typer
+          - types-requests

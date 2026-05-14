@@ -21,7 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dynamic = ["version"]
-dependencies = ["typer"]
+dependencies = ["typer", "requests"]
 
 # extras
 # https://peps.python.org/pep-0621/#dependencies-optional-dependencies
@@ -35,6 +35,7 @@ dev = [
     "pre-commit",
     "rich",
     "ruff",
+    "types-requests",
 ]
 
 [project.urls]
@@ -77,6 +78,9 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "RUF"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["typer.Argument", "typer.Option"]
 
 # https://coverage.readthedocs.io/en/6.4/config.html
 [tool.coverage.report]

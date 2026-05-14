@@ -1,18 +1,22 @@
+import socket
 import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlparse
 
 import typer
 
 import cite
+from cite._renew import RenewTarget
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 STATE = {"verbose": False}
 
 
 def _ts() -> str:
-    from datetime import datetime
-
     return datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")
 
 
@@ -273,6 +277,177 @@ def _try_clean(args: tuple) -> None:
         if isinstance(e, typer.Exit) and e.exit_code == 0:
             return
         typer.secho(f"Failed to clean {args[0]}: {e}", fg="red")
+
+
+def _port_in_use(host: str, port: int) -> bool:
+    """Return True if something is listening at host:port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.2)
+        return s.connect_ex((host, port)) == 0
+
+
+@contextmanager
+def _auto_mock_server_if_needed(target: RenewTarget, url: str) -> Iterator[None]:
+    """For --url test, spin up the mock for this run if nothing's listening yet."""
+    if target is not RenewTarget.test:
+        yield
+        return
+    parsed = urlparse(url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 80
+    if _port_in_use(host, port):
+        typer.secho(
+            f"{_ts()}Using existing mock server at {host}:{port}.",
+            fg="bright_blue",
+        )
+        yield
+        return
+    from cite.mock_renew.server import serving
+
+    typer.secho(
+        f"{_ts()}Auto-starting mock server at {host}:{port} ...",
+        fg="bright_blue",
+    )
+    with serving(host=host, port=port):
+        try:
+            yield
+        finally:
+            typer.secho(f"{_ts()}Stopping auto-started mock server.", fg="bright_blue")
+
+
+@app.command()
+def renew(
+    email: str = typer.Option(
+        ...,
+        "--email",
+        envvar="CITE_LICENSE_EMAIL",
+        help="Email to put in the renewal form.",
+    ),
+    full_name: str = typer.Option(
+        ...,
+        "--full-name",
+        envvar="CITE_LICENSE_FULL_NAME",
+        help="Full name to put in the renewal form.",
+    ),
+    c2l_file: str = typer.Option(
+        ...,
+        "--c2l-file",
+        envvar="CITE_LICENSE_C2L_FILE",
+        help="Path to the .c2l license request file to upload, "
+        "or the literal 'mock' to use the bundled mock.c2l (for --url test).",
+    ),
+    target: RenewTarget = typer.Option(
+        ...,
+        "--url",
+        envvar="CITE_LICENSE_URL",
+        case_sensitive=False,
+        help="Renewal target: 'nikon' (real Nikon endpoint) or 'test' (local "
+        "mock at http://127.0.0.1:8765/). Required.",
+    ),
+    note: str = typer.Option(
+        "CITE @ Harvard Medical School",
+        "--note",
+        envvar="CITE_LICENSE_NOTE",
+        help="Free-text note included with the submission.",
+    ),
+    expires: datetime | None = typer.Option(
+        None,
+        "--expires",
+        envvar="CITE_LICENSE_EXPIRES",
+        formats=["%Y-%m-%d"],
+        help="License expiration date (YYYY-MM-DD). "
+        "If omitted, falls back to get_license_expiration_date().",
+    ),
+    days_before: int = typer.Option(
+        14,
+        "--days-before",
+        help="Submit only when the license expires within this many days.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "-n",
+        "--dry-run",
+        help="Print what would be submitted and exit; do not POST.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "-f",
+        "--force",
+        help="Submit even if the license is not within the renewal window.",
+    ),
+) -> None:
+    """Renew the NIS-Elements Time-DEMO license by submitting the dealer form."""
+    from cite._renew import (
+        get_license_expiration_date,
+        resolve_c2l_file,
+        resolve_url,
+        should_renew,
+        submit_license_form,
+    )
+
+    url = resolve_url(target)
+    try:
+        c2l_path = resolve_c2l_file(c2l_file)
+    except FileNotFoundError as e:
+        typer.secho(f"{_ts()}{e}", fg="red", err=True)
+        raise typer.Exit(1) from e
+    exp_date = expires.date() if expires else get_license_expiration_date()
+    days_left = (exp_date - datetime.now().date()).days
+    typer.secho(
+        f"{_ts()}License expires {exp_date.isoformat()} ({days_left} days left).",
+        fg="bright_blue",
+    )
+
+    if not force and not should_renew(exp_date, days_before):
+        typer.secho(
+            f"{_ts()}No renewal needed (window: {days_before} days).",
+            fg="green",
+            bold=True,
+        )
+        return
+
+    if dry_run:
+        typer.secho(f"{_ts()}Would submit to {url}", fg=(140, 140, 140))
+        typer.secho(f"  email     = {email}", fg=(140, 140, 140))
+        typer.secho(f"  full_name = {full_name}", fg=(140, 140, 140))
+        typer.secho(
+            f"  c2l_file  = {c2l_path} ({c2l_path.stat().st_size} bytes)",
+            fg=(140, 140, 140),
+        )
+        typer.secho(f"  note      = {note}", fg=(140, 140, 140))
+        return
+
+    typer.secho(f"{_ts()}Submitting renewal request to {url} ...")
+    with _auto_mock_server_if_needed(target, url):
+        try:
+            resp = submit_license_form(
+                url=url,
+                email=email,
+                full_name=full_name,
+                c2l_file=c2l_path,
+                note=note,
+            )
+        except Exception as e:
+            typer.secho(f"{_ts()}Submission failed: {e}", fg="red", err=True)
+            raise typer.Exit(1) from e
+
+    typer.secho(f"{_ts()}Submitted. HTTP {resp.status_code}.", fg="green", bold=True)
+
+
+@app.command("mock-renew-server")
+def mock_renew_server(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8765, "--port"),
+    log_dir: Path | None = typer.Option(
+        None,
+        "--log-dir",
+        help="Directory to write submissions.log into. Defaults to CWD.",
+    ),
+) -> None:
+    """Run the local mock of the Nikon renewal form (for testing 'cite renew')."""
+    from cite.mock_renew import run
+
+    run(host=host, port=port, log_dir=log_dir)
 
 
 def main() -> None:

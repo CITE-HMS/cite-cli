@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>NIS-Elements Time-DEMO License (mock)</title>
+<style>
+  body { font-family: sans-serif; max-width: 720px; margin: 2em auto; padding: 0 1em; }
+  .header { border-bottom: 1px solid #ccc; margin-bottom: 1em; }
+  label { display: inline-block; width: 100px; margin-top: 0.5em; vertical-align: top; }
+  input[type=email], input[type=text], input[type=file], textarea { width: 300px; }
+  textarea { height: 150px; }
+  .button { margin-top: 1em; padding: 0.4em 1em; }
+  .footer { margin-top: 2em; font-size: 0.8em; color: #888; }
+  .mock-banner { background: #ffd; border: 1px solid #cc9; padding: 0.5em 1em; margin-bottom: 1em; }
+</style>
+</head>
+<body>
+  <div class="mock-banner">
+    <strong>Local mock</strong> of <code>https://nis-e-update.nikon-instruments.jp/dealers/</code>.
+    Submissions are logged locally and never sent to Nikon.
+  </div>
+
+  <div class="header">
+    <h1>NIS-Elements Time-DEMO License Configurator</h1>
+  </div>
+
+  <div id="content">
+    <div id="customer">
+      <h2>Time-DEMO License configuration request:</h2>
+
+      <form method="post" enctype="multipart/form-data" id="mainForm" action="/">
+        <label for="email">Email:</label>
+        <input name="email" id="email" type="email" value="" />
+        <br>
+        <label for="name">Full name:</label>
+        <input name="name" id="name" type="text" value="" />
+        <br>
+        <label for="c2l">C2L file*:</label>
+        <input name="c2l" id="c2l" type="file" />
+        <br>
+        <label for="note">Note:</label>
+        <textarea name="note" id="note"></textarea>
+        <br><br>
+        <input value="Send" type="submit" class="button" name="sendMe" id="sendButton" />
+      </form>
+      <br>
+      <small>* In the real form, generate .c2l file via the License Manager.</small>
+    </div>
+  </div>
+
+  <div class="footer">Local mock for cite-cli testing.</div>
+</body>
+</html>
