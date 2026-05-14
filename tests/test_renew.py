@@ -1,4 +1,5 @@
 import hashlib
+import re
 import socket
 import threading
 from datetime import date, timedelta
@@ -21,6 +22,8 @@ from cite.cli import app
 from cite.mock_renew.server import _Handler
 
 runner = CliRunner()
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 @pytest.fixture()
@@ -153,7 +156,9 @@ def test_cli_renew_requires_url(c2l_file: Path) -> None:
         ],
     )
     assert result.exit_code != 0
-    assert "--url" in result.output
+    # Strip ANSI escape codes: rich-formatted error output on some CI envs
+    # wraps each character individually so the literal substring won't appear.
+    assert "--url" in _ANSI_RE.sub("", result.output)
 
 
 def test_cli_renew_rejects_unknown_url(c2l_file: Path) -> None:
