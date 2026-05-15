@@ -303,3 +303,42 @@ def test_cli_license_raw_dumps_response(monkeypatch) -> None:
     result = runner.invoke(app, ["license", "--raw"])
     assert result.exit_code == 0, result.output
     assert '"ven":"40094"' in result.output
+
+
+# --- cite test-alert command ---
+
+
+def test_cli_test_alert_unconfigured_errors_with_hint() -> None:
+    """No alert env vars → exit 1 with setup instructions, no SMTP attempt."""
+    result = runner.invoke(app, ["test-alert"])
+    assert result.exit_code == 1
+    assert "Alert env vars not set" in result.output
+    assert "setx CITE_ALERT_SMTP_USER" in result.output
+
+
+def test_cli_test_alert_configured_sends(fake_smtp, monkeypatch) -> None:
+    _set_creds(monkeypatch)
+    result = runner.invoke(app, ["test-alert"])
+    assert result.exit_code == 0, result.output
+    assert "Test alert sent to ops@example.com" in result.output
+
+    assert len(fake_smtp.instances) == 1
+    sent = fake_smtp.instances[0].sent
+    assert sent is not None
+    assert "test-alert failed" in sent["Subject"]
+    body = sent.get_content()
+    assert "Test alert from `cite test-alert`" in body
+
+
+def test_cli_test_alert_smtp_failure_shows_troubleshooting(monkeypatch) -> None:
+    _set_creds(monkeypatch)
+
+    class _Broken:
+        def __init__(self, *a: object, **k: object) -> None:
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(_notify.smtplib, "SMTP", _Broken)
+    result = runner.invoke(app, ["test-alert"])
+    assert result.exit_code == 1
+    assert "SMTP send failed" in result.output
+    assert "App Password" in result.output

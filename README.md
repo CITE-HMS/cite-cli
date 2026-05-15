@@ -9,7 +9,7 @@ Available commands:
 - [`cite clean`](#cite-clean) — delete files older than N days from one or more directories
 - [`cite renew`](#cite-renew) — auto-submit the NIS-Elements Time-DEMO license renewal form to Nikon
 - [`cite license`](#cite-license) — quick check of the license expiration date read from the HASP dongle
-- [Email alerts on failure](#email-alerts-on-failure) — for `cite clean` and `cite renew`
+- [Email alerts on failure](#email-alerts-on-failure) — for `cite clean` and `cite renew`, plus `cite test-alert` to verify SMTP setup
 
 ## Prerequisites
 
@@ -89,5 +89,15 @@ Both `cite clean` and `cite renew` send an email when they fail (non-zero exit /
    ```
 
 That's it. The next time `cite clean` or `cite renew` fails on this machine, you'll receive an email with the command name, hostname, error message, and traceback.
+
+### Verify it works — `cite test-alert`
+
+Sends a one-off test email right now (no real failure needed). Use this immediately after running `setx` to confirm the App Password and recipient address are correct:
+
+```powershell
+uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite test-alert
+```
+
+If everything's wired up, you'll see `Test alert sent to ...` and an email lands in your inbox within seconds. If not, the command prints common causes (wrong App Password, 2FA not enabled, firewall blocking port 587, etc.) and exits 1.
 
 To use a non-Gmail SMTP server, additionally set `CITE_ALERT_SMTP_HOST` (default `smtp.gmail.com`) and `CITE_ALERT_SMTP_PORT` (default `587`, STARTTLS).

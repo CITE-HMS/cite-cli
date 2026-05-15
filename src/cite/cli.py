@@ -569,6 +569,53 @@ def license_info(
     typer.echo(f"HASP ID: {info.hasp_id}")
 
 
+@app.command("test-alert")
+def test_alert() -> None:
+    """Send a test failure-alert email to verify SMTP configuration."""
+    import os
+
+    from cite._notify import _is_configured, send_failure_email
+
+    if not _is_configured():
+        typer.secho(
+            f"{_ts()}Alert env vars not set. Set these in PowerShell first:\n"
+            '  setx CITE_ALERT_SMTP_USER     "you@gmail.com"\n'
+            '  setx CITE_ALERT_SMTP_PASSWORD "<Gmail App Password>"\n'
+            '  setx CITE_ALERT_TO            "you@gmail.com"\n'
+            "Then close and reopen PowerShell, and try again.",
+            fg="yellow",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    err = RuntimeError(
+        "Test alert from `cite test-alert` — if you got this email, "
+        "the alert mechanism is working."
+    )
+    typer.secho(f"{_ts()}Sending test alert ...", fg="bright_blue")
+    sent = send_failure_email("test-alert", err)
+    if sent:
+        typer.secho(
+            f"{_ts()}Test alert sent to {os.environ['CITE_ALERT_TO']}. "
+            "Check your inbox.",
+            fg="green",
+            bold=True,
+        )
+        return
+
+    typer.secho(
+        f"{_ts()}SMTP send failed. Common causes:\n"
+        "  - Wrong App Password (regenerate at "
+        "https://myaccount.google.com/apppasswords)\n"
+        "  - 2-Step Verification not enabled on the Google account\n"
+        "  - Network/firewall blocking outbound port 587\n"
+        "  - Typo in CITE_ALERT_SMTP_USER or CITE_ALERT_TO",
+        fg="red",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
 @app.command("mock-renew-server")
 def mock_renew_server(
     host: str = typer.Option("127.0.0.1", "--host"),
