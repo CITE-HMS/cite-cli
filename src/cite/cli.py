@@ -368,13 +368,6 @@ def renew(
         envvar="CITE_LICENSE_FULL_NAME",
         help="Full name to put in the renewal form.",
     ),
-    c2l_file: str = typer.Option(
-        ...,
-        "--c2l-file",
-        envvar="CITE_LICENSE_C2L_FILE",
-        help="Path to the .c2l license request file to upload, "
-        "or the literal 'mock' to use the bundled mock.c2l (for --url test).",
-    ),
     target: RenewTarget = typer.Option(
         ...,
         "--url",
@@ -382,6 +375,15 @@ def renew(
         case_sensitive=False,
         help="Renewal target: 'nikon' (real Nikon endpoint) or 'test' (local "
         "mock at http://127.0.0.1:8765/). Required.",
+    ),
+    c2l_file: str | None = typer.Option(
+        None,
+        "--c2l-file",
+        envvar="CITE_LICENSE_C2L_FILE",
+        help="Path to the .c2l file to upload. If omitted, auto-generates a "
+        "fresh one via nis_hasp_update.exe (written to "
+        "%USERPROFILE%\\.cite\\generated_request.c2l). "
+        "Use the literal 'mock' for the bundled mock.c2l (for --url test).",
     ),
     note: str = typer.Option(
         "CITE @ Harvard Medical School",
@@ -419,8 +421,10 @@ def renew(
     """Renew the NIS-Elements Time-DEMO license by submitting the dealer form."""
     with _alert_on_failure("renew"):
         from cite._renew import (
+            GENERATED_C2L_PATH,
             RENEW_STATE_PATH,
             RenewState,
+            generate_c2l,
             get_license_info,
             load_renew_state,
             resolve_c2l_file,
@@ -431,11 +435,13 @@ def renew(
         )
 
         url = resolve_url(target)
-        try:
-            c2l_path = resolve_c2l_file(c2l_file)
-        except FileNotFoundError as e:
-            typer.secho(f"{_ts()}{e}", fg="red", err=True)
-            raise typer.Exit(1) from e
+        c2l_path: Path | None = None
+        if c2l_file is not None:
+            try:
+                c2l_path = resolve_c2l_file(c2l_file)
+            except FileNotFoundError as e:
+                typer.secho(f"{_ts()}{e}", fg="red", err=True)
+                raise typer.Exit(1) from e
 
         hasp_id: str | None = None
         if expires:
@@ -482,14 +488,31 @@ def renew(
                 )
                 return
 
+        if c2l_path is None and not dry_run:
+            typer.secho(
+                f"{_ts()}Generating fresh .c2l via nis_hasp_update.exe ...",
+                fg="bright_blue",
+            )
+            try:
+                c2l_path = generate_c2l(GENERATED_C2L_PATH)
+            except RuntimeError as e:
+                typer.secho(f"{_ts()}{e}", fg="red", err=True)
+                raise typer.Exit(1) from e
+
         if dry_run:
             typer.secho(f"{_ts()}Would submit to {url}", fg=(140, 140, 140))
             typer.secho(f"  email     = {email}", fg=(140, 140, 140))
             typer.secho(f"  full_name = {full_name}", fg=(140, 140, 140))
-            typer.secho(
-                f"  c2l_file  = {c2l_path} ({c2l_path.stat().st_size} bytes)",
-                fg=(140, 140, 140),
-            )
+            if c2l_path is not None:
+                typer.secho(
+                    f"  c2l_file  = {c2l_path} ({c2l_path.stat().st_size} bytes)",
+                    fg=(140, 140, 140),
+                )
+            else:
+                typer.secho(
+                    f"  c2l_file  = (auto-generate to {GENERATED_C2L_PATH})",
+                    fg=(140, 140, 140),
+                )
             typer.secho(f"  note      = {note}", fg=(140, 140, 140))
             if hasp_id is not None:
                 typer.secho(
@@ -498,6 +521,7 @@ def renew(
                 )
             return
 
+        assert c2l_path is not None  # generated above when not in dry-run
         typer.secho(f"{_ts()}Submitting renewal request to {url} ...")
         with _auto_mock_server_if_needed(target, url):
             try:
@@ -567,6 +591,37 @@ def license_info(
         fg="bright_blue",
     )
     typer.echo(f"HASP ID: {info.hasp_id}")
+
+
+@app.command("request-file")
+def request_file(
+    output: Path = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Where to write the .c2l file. "
+        "Defaults to %USERPROFILE%\\.cite\\generated_request.c2l.",
+    ),
+) -> None:
+    """Generate a fresh .c2l renewal request via nis_hasp_update.exe."""
+    from cite._renew import GENERATED_C2L_PATH, generate_c2l
+
+    target = output or GENERATED_C2L_PATH
+    typer.secho(
+        f"{_ts()}Generating .c2l via nis_hasp_update.exe -> {target} ...",
+        fg="bright_blue",
+    )
+    try:
+        path = generate_c2l(target)
+    except RuntimeError as e:
+        typer.secho(f"{_ts()}{e}", fg="red", err=True)
+        raise typer.Exit(1) from e
+
+    typer.secho(
+        f"{_ts()}Wrote {path} ({path.stat().st_size:,} bytes).",
+        fg="green",
+        bold=True,
+    )
 
 
 @app.command("test-alert")

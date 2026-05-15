@@ -17,6 +17,8 @@ from cite._renew import (
     LicenseInfo,
     RenewState,
     RenewTarget,
+    discover_rus_exe,
+    generate_c2l,
     get_license_info,
     load_renew_state,
     resolve_c2l_file,
@@ -571,6 +573,108 @@ def test_save_renew_state_atomic(tmp_state_path: Path) -> None:
     assert not leftover.exists()
 
 
+# --- discover_rus_exe / generate_c2l ---
+
+
+def test_discover_rus_exe_honours_env_override(tmp_path: Path, monkeypatch) -> None:
+    fake_exe = tmp_path / "nis_hasp_update.exe"
+    fake_exe.write_bytes(b"")
+    monkeypatch.setenv("CITE_RUS_EXE", str(fake_exe))
+    assert discover_rus_exe() == fake_exe
+
+
+def test_discover_rus_exe_returns_none_for_bad_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("CITE_RUS_EXE", str(tmp_path / "does_not_exist.exe"))
+    # Don't accidentally match a real install on the dev box:
+    monkeypatch.setattr(_renew, "RUS_EXE_GLOB_PATTERNS", ())
+    assert discover_rus_exe() is None
+
+
+def test_generate_c2l_writes_file(tmp_path: Path, monkeypatch) -> None:
+    """Successful path: subprocess writes the file, returncode 0."""
+    import subprocess
+
+    fake_exe = tmp_path / "nis_hasp_update.exe"
+    fake_exe.write_bytes(b"")
+    output = tmp_path / "out.c2l"
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        Path(cmd[-1]).write_bytes(b"fake c2l content")
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(_renew.subprocess, "run", fake_run)
+
+    result = generate_c2l(output, rus_exe=fake_exe)
+    assert result == output
+    assert output.read_bytes() == b"fake c2l content"
+    assert captured["cmd"] == [str(fake_exe), "-r", str(output)]
+
+
+def test_generate_c2l_no_rus_found(monkeypatch) -> None:
+    monkeypatch.delenv("CITE_RUS_EXE", raising=False)
+    monkeypatch.setattr(_renew, "RUS_EXE_GLOB_PATTERNS", ())
+    with pytest.raises(RuntimeError, match="Could not locate nis_hasp_update"):
+        generate_c2l(Path("/tmp/whatever.c2l"))
+
+
+def test_generate_c2l_nonzero_exit_raises(tmp_path: Path, monkeypatch) -> None:
+    fake_exe = tmp_path / "nis_hasp_update.exe"
+    fake_exe.write_bytes(b"")
+
+    def fake_run(cmd, **kwargs):
+        import subprocess
+
+        return subprocess.CompletedProcess(
+            cmd, returncode=2, stdout="", stderr="oh no it broke"
+        )
+
+    monkeypatch.setattr(_renew.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="oh no it broke"):
+        generate_c2l(tmp_path / "out.c2l", rus_exe=fake_exe)
+
+
+def test_generate_c2l_exit_zero_but_no_file_raises(tmp_path: Path, monkeypatch) -> None:
+    """The real bug from manual testing: RUS exits 0 without writing the file
+    when the target dir doesn't exist. We must NOT trust the exit code alone."""
+    fake_exe = tmp_path / "nis_hasp_update.exe"
+    fake_exe.write_bytes(b"")
+
+    def fake_run(cmd, **kwargs):
+        import subprocess
+
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(_renew.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="did not create"):
+        generate_c2l(tmp_path / "out.c2l", rus_exe=fake_exe)
+
+
+def test_generate_c2l_overwrites_stale_file(tmp_path: Path, monkeypatch) -> None:
+    """If a previous .c2l exists at the target path, it must be replaced
+    (otherwise a failed run could leave us submitting stale data)."""
+    fake_exe = tmp_path / "nis_hasp_update.exe"
+    fake_exe.write_bytes(b"")
+    output = tmp_path / "out.c2l"
+    output.write_bytes(b"OLD STALE CONTENT")
+
+    def fake_run(cmd, **kwargs):
+        import subprocess
+
+        Path(cmd[-1]).write_bytes(b"FRESH CONTENT")
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(_renew.subprocess, "run", fake_run)
+
+    generate_c2l(output, rus_exe=fake_exe)
+    assert output.read_bytes() == b"FRESH CONTENT"
+
+
 # --- CLI dedup integration ---
 
 
@@ -750,3 +854,109 @@ def test_cli_renew_acc_error_exits_nonzero(
     result = _invoke_renew_no_expires(c2l_file)
     assert result.exit_code == 1
     assert "Could not reach Sentinel ACC" in result.output
+
+
+# --- cite request-file + auto-generation in renew ---
+
+
+def test_cli_request_file_writes_to_output(tmp_path: Path, monkeypatch) -> None:
+    out = tmp_path / "out.c2l"
+
+    def fake_generate(target: Path, rus_exe=None):
+        target.write_bytes(b"hello c2l")
+        return target
+
+    monkeypatch.setattr(_renew, "generate_c2l", fake_generate)
+
+    result = runner.invoke(app, ["request-file", "--output", str(out)])
+    assert result.exit_code == 0, result.output
+    assert "Wrote" in result.output
+    assert str(out) in result.output
+    assert out.read_bytes() == b"hello c2l"
+
+
+def test_cli_request_file_error_exits_nonzero(tmp_path: Path, monkeypatch) -> None:
+    def fake_generate(target: Path, rus_exe=None):
+        raise RuntimeError("nis_hasp_update.exe not found")
+
+    monkeypatch.setattr(_renew, "generate_c2l", fake_generate)
+    result = runner.invoke(app, ["request-file", "--output", str(tmp_path / "x.c2l")])
+    assert result.exit_code == 1
+    assert "nis_hasp_update.exe not found" in result.output
+
+
+def test_cli_renew_auto_generates_c2l_when_omitted(
+    mock_server, tmp_state_path: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """When --c2l-file is omitted, `cite renew` should call generate_c2l."""
+    near = date.today() + timedelta(days=3)
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(near))
+
+    generated = tmp_path / "auto_generated.c2l"
+    monkeypatch.setattr(_renew, "GENERATED_C2L_PATH", generated)
+
+    captured: dict = {}
+
+    def fake_generate(target: Path, rus_exe=None):
+        captured["target"] = target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"auto-generated c2l bytes")
+        return target
+
+    monkeypatch.setattr(_renew, "generate_c2l", fake_generate)
+
+    result = runner.invoke(
+        app,
+        [
+            "renew",
+            "--email",
+            "auto@example.com",
+            "--full-name",
+            "Auto",
+            "--url",
+            "test",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Generating fresh .c2l" in result.output
+    assert "Submitted. HTTP 200" in result.output
+    assert captured["target"] == generated
+    assert generated.is_file()
+
+    # The auto-generated file actually got POSTed.
+    log = mock_server["log_path"].read_text(encoding="utf-8")
+    assert "auto_generated.c2l" in log
+
+
+def test_cli_renew_dry_run_does_not_generate(
+    tmp_state_path: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """Dry-run with no --c2l-file should print the auto-generate intent
+    but NOT actually invoke nis_hasp_update.exe."""
+    near = date.today() + timedelta(days=3)
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(near))
+
+    called = {"yes": False}
+
+    def fake_generate(target: Path, rus_exe=None):
+        called["yes"] = True
+        raise AssertionError("must not be called in dry-run")
+
+    monkeypatch.setattr(_renew, "generate_c2l", fake_generate)
+
+    result = runner.invoke(
+        app,
+        [
+            "renew",
+            "--email",
+            "dry@example.com",
+            "--full-name",
+            "Dry",
+            "--url",
+            "test",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "auto-generate" in result.output
+    assert called["yes"] is False

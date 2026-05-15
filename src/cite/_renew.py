@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
+from glob import glob
 from pathlib import Path
 
 import requests
@@ -26,6 +28,14 @@ _JSON_TRAILER_RE = re.compile(rb"/\*.*?\*/\s*$", re.DOTALL)
 _EXP_DATE_RE = re.compile(r"(\w{3})\s+(\d{1,2}),\s+(\d{4})")
 
 RENEW_STATE_PATH = Path.home() / ".cite" / "renew_state.json"
+GENERATED_C2L_PATH = Path.home() / ".cite" / "generated_request.c2l"
+
+# Standard install locations for Nikon's HASP Update tool. The user can
+# override via the CITE_RUS_EXE env var if their install is elsewhere.
+RUS_EXE_GLOB_PATTERNS = (
+    "C:/Program Files/NIS-Elements*/HASP/nis_hasp_update.exe",
+    "C:/Program Files (x86)/NIS-Elements*/HASP/nis_hasp_update.exe",
+)
 
 
 class RenewTarget(str, Enum):
@@ -192,6 +202,75 @@ def save_renew_state(state: RenewState, path: Path | None = None) -> None:
 def should_renew(expiration_date: date, days_before: int) -> bool:
     days_left = (expiration_date - date.today()).days
     return 0 <= days_left <= days_before
+
+
+def discover_rus_exe() -> Path | None:
+    """Find nis_hasp_update.exe under standard NIS-Elements install locations.
+
+    Honors the CITE_RUS_EXE env var as an override. Returns None if no
+    candidate exists on disk.
+    """
+    override = os.environ.get("CITE_RUS_EXE")
+    if override:
+        p = Path(override)
+        return p if p.is_file() else None
+    for pattern in RUS_EXE_GLOB_PATTERNS:
+        for match in glob(pattern):
+            return Path(match)
+    return None
+
+
+def generate_c2l(output_path: Path, rus_exe: Path | None = None) -> Path:
+    """Generate a fresh .c2l renewal request via nis_hasp_update.exe.
+
+    Calls `nis_hasp_update.exe -r <output_path>` (the documented silent
+    flag found in the binary's string table). Verifies the output file
+    was actually created — the tool can exit 0 without writing the file
+    when the target directory doesn't exist, so we never trust the exit
+    code alone.
+
+    Raises RuntimeError on any failure (RUS not found, subprocess error,
+    or no output file produced).
+    """
+    if rus_exe is None:
+        rus_exe = discover_rus_exe()
+    if rus_exe is None or not rus_exe.is_file():
+        raise RuntimeError(
+            "Could not locate nis_hasp_update.exe. Set CITE_RUS_EXE to its "
+            "full path, or confirm NIS-Elements is installed under "
+            r"C:\Program Files\NIS-Elements*\HASP\."
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.exists():
+        output_path.unlink()
+
+    try:
+        result = subprocess.run(
+            [str(rus_exe), "-r", str(output_path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"{rus_exe.name} timed out after 60s; is a HASP dongle attached?"
+        ) from e
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"{rus_exe.name} exited {result.returncode}: "
+            f"{(result.stderr or result.stdout or '(no output)').strip()}"
+        )
+
+    if not output_path.is_file():
+        raise RuntimeError(
+            f"{rus_exe.name} reported success but did not create {output_path}. "
+            "Check that the parent directory exists and is writable, and that "
+            "a HASP dongle is attached."
+        )
+
+    return output_path
 
 
 def submit_license_form(
