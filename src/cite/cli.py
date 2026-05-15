@@ -2,7 +2,7 @@ import socket
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlparse
@@ -18,6 +18,42 @@ STATE = {"verbose": False}
 
 def _ts() -> str:
     return datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")
+
+
+def _dispatch_alert(command: str, error: BaseException) -> None:
+    """Send a failure email (if configured) and log the dispatch result."""
+    from cite._notify import send_failure_email
+
+    # Unwrap typer.Exit to surface the underlying cause in the email.
+    underlying: BaseException = error
+    for _ in range(10):
+        if not isinstance(underlying, typer.Exit) or underlying.__cause__ is None:
+            break
+        underlying = underlying.__cause__
+
+    try:
+        sent = send_failure_email(command, underlying)
+    except Exception as e:  # never let alerting mask the real failure
+        typer.secho(f"{_ts()}(alert dispatch errored: {e})", fg="yellow", err=True)
+        return
+    if sent:
+        typer.secho(f"{_ts()}Failure alert email sent.", fg="yellow", err=True)
+
+
+@contextmanager
+def _alert_on_failure(command: str) -> Iterator[None]:
+    """Wrap a command body; email on any failure exit. Aborts are not failures."""
+    try:
+        yield
+    except typer.Abort:
+        raise
+    except typer.Exit as e:
+        if e.exit_code:
+            _dispatch_alert(command, e)
+        raise
+    except BaseException as e:
+        _dispatch_alert(command, e)
+        raise
 
 
 # List of default paths to clean if no path is specified.
@@ -105,18 +141,21 @@ def clean(
     skip: str = typer.Option("delete", help="Don't delete files with this string."),
 ) -> None:
     """Delete files in a given directory older than a certain age."""
-    if directory is None:
-        dirs = [d for d in DEFAULT_PATHS if Path(d).is_dir()]
-        if not dirs:
-            typer.secho("No default directories found on this machine.", fg="red")
-            raise typer.Exit(1)
-        for d in dirs:
-            typer.secho(
-                f"{_ts()}Cleaning default path: {d!r}", fg="bright_blue", bold=True
-            )
-            _clean_directory(d, days, dry_run, force, delete_empty_dirs, skip)
-    else:
-        _clean_directory(directory, days, dry_run, force, delete_empty_dirs, skip)
+    with _alert_on_failure("clean"):
+        if directory is None:
+            dirs = [d for d in DEFAULT_PATHS if Path(d).is_dir()]
+            if not dirs:
+                typer.secho("No default directories found on this machine.", fg="red")
+                raise typer.Exit(1)
+            for d in dirs:
+                typer.secho(
+                    f"{_ts()}Cleaning default path: {d!r}",
+                    fg="bright_blue",
+                    bold=True,
+                )
+                _clean_directory(d, days, dry_run, force, delete_empty_dirs, skip)
+        else:
+            _clean_directory(directory, days, dry_run, force, delete_empty_dirs, skip)
 
 
 def _clean_directory(
@@ -356,7 +395,8 @@ def renew(
         envvar="CITE_LICENSE_EXPIRES",
         formats=["%Y-%m-%d"],
         help="License expiration date (YYYY-MM-DD). "
-        "If omitted, falls back to get_license_expiration_date().",
+        "If omitted, reads it from the local Sentinel ACC (HASP dongle). "
+        "When given explicitly, submission dedup is skipped.",
     ),
     days_before: int = typer.Option(
         14,
@@ -377,61 +417,156 @@ def renew(
     ),
 ) -> None:
     """Renew the NIS-Elements Time-DEMO license by submitting the dealer form."""
-    from cite._renew import (
-        get_license_expiration_date,
-        resolve_c2l_file,
-        resolve_url,
-        should_renew,
-        submit_license_form,
-    )
-
-    url = resolve_url(target)
-    try:
-        c2l_path = resolve_c2l_file(c2l_file)
-    except FileNotFoundError as e:
-        typer.secho(f"{_ts()}{e}", fg="red", err=True)
-        raise typer.Exit(1) from e
-    exp_date = expires.date() if expires else get_license_expiration_date()
-    days_left = (exp_date - datetime.now().date()).days
-    typer.secho(
-        f"{_ts()}License expires {exp_date.isoformat()} ({days_left} days left).",
-        fg="bright_blue",
-    )
-
-    if not force and not should_renew(exp_date, days_before):
-        typer.secho(
-            f"{_ts()}No renewal needed (window: {days_before} days).",
-            fg="green",
-            bold=True,
+    with _alert_on_failure("renew"):
+        from cite._renew import (
+            RENEW_STATE_PATH,
+            RenewState,
+            get_license_info,
+            load_renew_state,
+            resolve_c2l_file,
+            resolve_url,
+            save_renew_state,
+            should_renew,
+            submit_license_form,
         )
-        return
 
-    if dry_run:
-        typer.secho(f"{_ts()}Would submit to {url}", fg=(140, 140, 140))
-        typer.secho(f"  email     = {email}", fg=(140, 140, 140))
-        typer.secho(f"  full_name = {full_name}", fg=(140, 140, 140))
-        typer.secho(
-            f"  c2l_file  = {c2l_path} ({c2l_path.stat().st_size} bytes)",
-            fg=(140, 140, 140),
-        )
-        typer.secho(f"  note      = {note}", fg=(140, 140, 140))
-        return
-
-    typer.secho(f"{_ts()}Submitting renewal request to {url} ...")
-    with _auto_mock_server_if_needed(target, url):
+        url = resolve_url(target)
         try:
-            resp = submit_license_form(
-                url=url,
-                email=email,
-                full_name=full_name,
-                c2l_file=c2l_path,
-                note=note,
-            )
-        except Exception as e:
-            typer.secho(f"{_ts()}Submission failed: {e}", fg="red", err=True)
+            c2l_path = resolve_c2l_file(c2l_file)
+        except FileNotFoundError as e:
+            typer.secho(f"{_ts()}{e}", fg="red", err=True)
             raise typer.Exit(1) from e
 
-    typer.secho(f"{_ts()}Submitted. HTTP {resp.status_code}.", fg="green", bold=True)
+        hasp_id: str | None = None
+        if expires:
+            exp_date = expires.date()
+        else:
+            try:
+                info = get_license_info()
+            except RuntimeError as e:
+                typer.secho(f"{_ts()}{e}", fg="red", err=True)
+                raise typer.Exit(1) from e
+            exp_date, hasp_id = info.expiration_date, info.hasp_id
+
+        if hasp_id is not None:
+            # Match the hex form Nikon's tools display (e.g. "09882A98").
+            try:
+                hasp_id_hex = f"{int(hasp_id):08X}"
+            except ValueError:
+                hasp_id_hex = hasp_id
+            note = f"{note} [HASP ID: {hasp_id_hex}]"
+
+        days_left = (exp_date - datetime.now().date()).days
+        typer.secho(
+            f"{_ts()}License expires {exp_date.isoformat()} ({days_left} days left).",
+            fg="bright_blue",
+        )
+
+        if not force and not should_renew(exp_date, days_before):
+            typer.secho(
+                f"{_ts()}No renewal needed (window: {days_before} days).",
+                fg="green",
+                bold=True,
+            )
+            return
+
+        if not force and hasp_id is not None:
+            state = load_renew_state()
+            if state and state.expiration_date == exp_date and state.hasp_id == hasp_id:
+                typer.secho(
+                    f"{_ts()}Already submitted on "
+                    f"{state.submitted_at.date().isoformat()} for license expiring "
+                    f"{exp_date.isoformat()}. Awaiting Nikon's updated .c2v; "
+                    f"rerun with --force to resubmit.",
+                    fg="yellow",
+                )
+                return
+
+        if dry_run:
+            typer.secho(f"{_ts()}Would submit to {url}", fg=(140, 140, 140))
+            typer.secho(f"  email     = {email}", fg=(140, 140, 140))
+            typer.secho(f"  full_name = {full_name}", fg=(140, 140, 140))
+            typer.secho(
+                f"  c2l_file  = {c2l_path} ({c2l_path.stat().st_size} bytes)",
+                fg=(140, 140, 140),
+            )
+            typer.secho(f"  note      = {note}", fg=(140, 140, 140))
+            if hasp_id is not None:
+                typer.secho(
+                    f"  state     = {RENEW_STATE_PATH} (hasp_id={hasp_id})",
+                    fg=(140, 140, 140),
+                )
+            return
+
+        typer.secho(f"{_ts()}Submitting renewal request to {url} ...")
+        with _auto_mock_server_if_needed(target, url):
+            try:
+                resp = submit_license_form(
+                    url=url,
+                    email=email,
+                    full_name=full_name,
+                    c2l_file=c2l_path,
+                    note=note,
+                )
+            except Exception as e:
+                typer.secho(f"{_ts()}Submission failed: {e}", fg="red", err=True)
+                raise typer.Exit(1) from e
+
+        typer.secho(
+            f"{_ts()}Submitted. HTTP {resp.status_code}.", fg="green", bold=True
+        )
+
+        if hasp_id is not None:
+            save_renew_state(
+                RenewState(
+                    expiration_date=exp_date,
+                    hasp_id=hasp_id,
+                    submitted_at=datetime.now(timezone.utc),
+                    url=url,
+                )
+            )
+
+
+@app.command("license")
+def license_info(
+    raw: bool = typer.Option(
+        False,
+        "--raw",
+        help="Print the unfiltered ACC features feed (for debugging).",
+    ),
+) -> None:
+    """Read the NIS-Elements license expiration date from the local HASP dongle."""
+    import requests
+
+    from cite._renew import ACC_URL, get_license_info
+
+    if raw:
+        try:
+            resp = requests.get(ACC_URL, timeout=5)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            typer.secho(
+                f"{_ts()}Could not reach Sentinel ACC at {ACC_URL}: {e}",
+                fg="red",
+                err=True,
+            )
+            raise typer.Exit(1) from e
+        typer.echo(resp.text)
+        return
+
+    try:
+        info = get_license_info()
+    except RuntimeError as e:
+        typer.secho(f"{_ts()}{e}", fg="red", err=True)
+        raise typer.Exit(1) from e
+
+    days_left = (info.expiration_date - datetime.now().date()).days
+    typer.secho(
+        f"{_ts()}License expires {info.expiration_date.isoformat()} "
+        f"({days_left} days left).",
+        fg="bright_blue",
+    )
+    typer.echo(f"HASP ID: {info.hasp_id}")
 
 
 @app.command("mock-renew-server")
