@@ -91,15 +91,26 @@ To clean a specific directory instead of the defaults, add the path as the first
 
 ---
 
-### `cite renew` — auto-submit the Nikon license renewal form
+### `cite renew` — full renewal cycle (apply then submit) in one command
 
-Submits the NIS-Elements Time-DEMO license renewal form to Nikon when the license is within 14 days of expiring. Fully unattended:
+Runs the complete renewal loop daily: first apply Nikon's reply if one is pending, then submit a fresh request if the dongle is in the renewal window. **One Task Scheduler entry per machine** covers both halves of the cycle.
 
-- Reads the expiration date live from the local Sentinel HASP dongle via ACC at `http://localhost:1947`.
-- Auto-generates the `.c2l` request file by running `nis_hasp_update.exe -r` (discovered under `C:\Program Files\NIS-Elements*\HASP\`).
-- Appends the HASP ID (e.g. `09882A98`) to the submission note so Nikon's staff can identify the dongle.
-- **Idempotent**: once submitted for a given expiration date, won't re-submit until Nikon's updated `.c2v` is applied. State is tracked in `%USERPROFILE%\.cite\renew_state.json`. Safe to schedule daily.
-- Sends a failure alert email if it crashes (requires [email alert setup](#email-alerts-on-failure)).
+**Phase 1 — apply** (runs first; skip with `--no-apply`): if `%USERPROFILE%\.cite\renew_state.json` exists, polls the shared Gmail inbox for Nikon's `.l2c` reply, downloads it, verifies the HASP ID matches this dongle, and applies it via `nis_hasp_update.exe -a`. Sends an URGENT email if no matching reply has arrived AND the license expires in ≤ 4 days.
+
+**Phase 2 — submit** (always runs unless phase 1 raised): reads the dongle's expiration via ACC, checks the renewal window, and submits a fresh `.c2l` to Nikon if needed.
+
+Each phase has its own failure-alert wrapper — a failure in phase 1 does **not** block phase 2.
+
+**Per-phase details:**
+
+- Phase 2 reads expiration live from the local Sentinel HASP dongle via ACC at `http://localhost:1947`.
+- Phase 2 auto-generates the `.c2l` by running `nis_hasp_update.exe -r` (discovered under `C:\Program Files\NIS-Elements*\HASP\`).
+- The submission note includes the HASP ID (e.g. `09882A98`) so Nikon's staff can identify the dongle.
+- **Idempotent**: once submitted for a given expiration date, won't re-submit until Nikon's updated `.c2v` is applied (state in `%USERPROFILE%\.cite\renew_state.json`). Safe to schedule daily.
+- Phase 1's multi-PC handling: the shared `citeathms@gmail.com` inbox receives replies for every microscope. Each candidate `.l2c` is identified by its HASP-ID-in-filename (`<HEX>.l2c`); we apply only the one matching this PC. Other PCs' Message-IDs are cached in `~/.cite/checked_emails.json` so they are never re-downloaded.
+- **Defense-in-depth**: HASP ID is verified from the filename before applying, and `nis_hasp_update.exe` itself rejects key-type mismatches.
+
+**Prerequisites for phase 1:** uses the same Gmail App Password set up for [email alerts](#email-alerts-on-failure). `CITE_ALERT_SMTP_USER` / `CITE_ALERT_SMTP_PASSWORD` serve both outbound SMTP and inbound IMAP — no additional env vars needed.
 
 **Task Scheduler arguments** (runs daily):
 
@@ -107,56 +118,61 @@ Submits the NIS-Elements Time-DEMO license renewal form to Nikon when the licens
 /c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite renew --email you@example.com --full-name "Your Name" --url nikon >> %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
-On most days, `cite renew` will detect that the license is still outside the renewal window (or already submitted this cycle) and exit cleanly without contacting Nikon.
+Schedule at e.g. 01:00. **Stagger start times across machines** to avoid all PCs hitting Gmail simultaneously:
+
+- **(Recommended)** In the trigger's **Edit** dialog, enable **Delay task for up to (random delay)** and set 1 hour. Task Scheduler picks a different random offset each run.
+- Or set a fixed offset per PC (01:00, 01:05, 01:10, …).
+
+On most days the apply phase exits cleanly because no `.cite/renew_state.json` exists (no pending renewal), and the submit phase exits cleanly because the license isn't yet within the 14-day window — net effect: a quick log line and exit 0.
 
 **Optional overrides:**
 
-- If `nis_hasp_update.exe` is not auto-discovered, set the path explicitly:
+- If `nis_hasp_update.exe` is not auto-discovered, set its path:
+
   ```powershell
   setx CITE_RUS_EXE "C:\custom\path\to\nis_hasp_update.exe"
   ```
-- To supply a pre-generated `.c2l` file instead of auto-generating one:
+
+- To supply a pre-generated `.c2l` instead of auto-generating one:
+
   ```bat
   ... cite renew --email ... --full-name ... --url nikon --c2l-file C:\path\to\file.c2l
   ```
 
-**Dry-run (no side effects, for smoke-testing):**
+- To skip the apply phase (e.g. for testing the submit path in isolation):
+
+  ```bat
+  ... cite renew ... --no-apply
+  ```
+
+**Dry-run (no side effects):**
 
 ```powershell
 uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite renew `
-    --email you@example.com `
-    --full-name "Your Name" `
-    --url nikon `
+    --email you@example.com --full-name "Your Name" --url nikon `
     --force --dry-run
 ```
 
-`--force` bypasses the renewal-window check; `--dry-run` skips the POST and the `.c2l` generation. Nothing is submitted or written.
+`--force` bypasses the renewal-window check; `--dry-run` skips the POST and the `.c2l` generation. Nothing is submitted or written. (The apply phase runs but its `--dry-run` semantics — diagnostic-only, no apply — also apply.)
 
 ---
 
-### `cite apply-update` — auto-apply Nikon's `.l2c` reply
+### `cite apply-update` — standalone apply-only command (advanced / debugging)
 
-Closes the renewal loop: after `cite renew` submits the request, this command polls the shared Gmail inbox for Nikon's reply, downloads the `.l2c` file, verifies it matches this PC's dongle, and applies it silently via `nis_hasp_update.exe -a`.
+This is the same logic as `cite renew`'s apply phase, exposed as a standalone command for debugging and `--dry-run` testing. **You do not need to schedule this separately if you already schedule `cite renew`** — the apply phase runs there by default.
 
-**Key behavior:**
+When useful:
 
-- **No-ops cleanly** when there is no pending renewal on this PC (no `~/.cite/renew_state.json` → exits 0 without opening IMAP).
-- **Multi-PC-aware**: the same inbox feeds every microscope. Downloads each candidate `.l2c`, parses its HASP ID, and applies only the one matching this PC's dongle. Other PCs' replies are cached in `~/.cite/checked_emails.json` so they are never re-downloaded.
-- **URGENT alert** if no matching reply has arrived and the dongle expires in ≤ 4 days. Subject prefixed `[cite-cli] URGENT: ...`.
-- **Defense-in-depth**: HASP ID is verified from the filename before applying, and `nis_hasp_update.exe` itself rejects mismatches.
+- **`--dry-run` mode**: cross-platform diagnostic. Polls IMAP, downloads candidate `.l2c` files into a tmp dir, parses HASP IDs, and reports what was found — without invoking `nis_hasp_update.exe`, writing state, or touching the production cache. Lets you verify your Gmail credentials and the inbox shape on macOS before deploying to Windows.
+- **Manual one-shot apply**: if you've manually placed a `~/.cite/renew_state.json` and want to force the apply step without the submit phase running afterward.
 
-**Prerequisites:** uses the same Gmail App Password set up for [email alerts](#email-alerts-on-failure). `CITE_ALERT_SMTP_USER` / `CITE_ALERT_SMTP_PASSWORD` serve both outbound SMTP and inbound IMAP — no additional env vars needed.
-
-**Task Scheduler arguments** (runs daily):
+If you do want a separate, IMAP-only Task Scheduler entry (e.g. to poll more frequently than `cite renew` runs):
 
 ```bat
 /c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite apply-update >> %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
-Schedule at e.g. 01:00. **Stagger start times across machines** to avoid all PCs hitting Gmail simultaneously:
-
-- **(Recommended)** In the trigger's **Edit** dialog, enable **Delay task for up to (random delay)** and set 1 hour. Task Scheduler picks a different random offset each run.
-- Or set a fixed offset per PC (01:00, 01:05, 01:10, …).
+Stagger across machines the same way as `cite renew` (random delay in Task Scheduler).
 
 **Dry-run (cross-platform, no dongle needed):**
 

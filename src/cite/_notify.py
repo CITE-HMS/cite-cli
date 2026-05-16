@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from typing import TYPE_CHECKING
 
+from cite._renew import hasp_id_to_hex
+
 if TYPE_CHECKING:
     from cite._renew import LicenseInfo, RenewState
 
@@ -78,14 +80,6 @@ def send_failure_email(command: str, error: BaseException) -> bool:
         return False
 
 
-def _hasp_id_hex(decimal_str: str) -> str:
-    """Convert ACC's decimal HASP ID to the hex form Nikon's tools use."""
-    try:
-        return f"{int(decimal_str):08X}"
-    except ValueError:
-        return decimal_str
-
-
 def send_urgency_alert(state: RenewState, days_remaining: int) -> bool:
     """Send the 'deadline approaching, no Nikon reply yet' email.
 
@@ -103,7 +97,7 @@ def send_urgency_alert(state: RenewState, days_remaining: int) -> bool:
     from_addr = os.environ.get("CITE_ALERT_FROM", user)
 
     hostname = socket.gethostname()
-    hasp_hex = _hasp_id_hex(state.hasp_id)
+    hasp_hex = hasp_id_to_hex(state.hasp_id)
     now = datetime.now(tz=timezone.utc)
     submitted_age = (now - state.submitted_at).days
 
@@ -167,7 +161,7 @@ def send_apply_success_email(before: LicenseInfo, after: LicenseInfo) -> bool:
     from_addr = os.environ.get("CITE_ALERT_FROM", user)
 
     hostname = socket.gethostname()
-    hasp_hex = _hasp_id_hex(before.hasp_id)
+    hasp_hex = hasp_id_to_hex(before.hasp_id)
     days_gained = (after.expiration_date - before.expiration_date).days
     days_left = (after.expiration_date - datetime.now(tz=timezone.utc).date()).days
 

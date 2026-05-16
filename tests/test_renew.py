@@ -109,7 +109,7 @@ def mock_acc(monkeypatch):
 @pytest.mark.parametrize(
     "delta_days, expected",
     [
-        (-1, False),  # already expired
+        (-1, True),  # already expired — renewal is overdue
         (0, True),  # expires today
         (1, True),  # tomorrow
         (14, True),  # boundary
@@ -177,6 +177,31 @@ def test_submit_license_form_missing_c2l_raises(tmp_path: Path) -> None:
             email="x@y.z",
             full_name="x",
             c2l_file=tmp_path / "does-not-exist.c2l",
+            note="",
+        )
+
+
+def test_submit_license_form_empty_body_raises(tmp_path: Path, monkeypatch) -> None:
+    """An HTTP 200 with an empty body must raise — it signals a silent failure."""
+    import requests as _req
+
+    c2l = tmp_path / "req.c2l"
+    c2l.write_bytes(b"dummy c2l")
+
+    class _EmptyResp:
+        status_code = 200
+        content = b""
+
+        def raise_for_status(self) -> None:
+            pass
+
+    monkeypatch.setattr(_req, "post", lambda *a, **kw: _EmptyResp())
+    with pytest.raises(RuntimeError, match="empty response body"):
+        submit_license_form(
+            url="http://127.0.0.1:1/",
+            email="x@y.z",
+            full_name="x",
+            c2l_file=c2l,
             note="",
         )
 
@@ -960,3 +985,116 @@ def test_cli_renew_dry_run_does_not_generate(
     assert result.exit_code == 0, result.output
     assert "auto-generate" in result.output
     assert called["yes"] is False
+
+
+# --- combined renew (apply-first, then submit) -----------------------------
+
+
+def test_cli_renew_runs_apply_phase_first(
+    mock_server, c2l_file: Path, tmp_state_path: Path, monkeypatch
+) -> None:
+    """By default `cite renew` calls apply_update() before the submit phase."""
+    from cite import cli
+
+    call_order: list[str] = []
+    real_apply = cli.apply_update
+
+    def recording_apply(*args, **kwargs):
+        call_order.append("apply")
+        real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "apply_update", recording_apply)
+
+    near = date.today() + timedelta(days=3)
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(near))
+
+    result = runner.invoke(
+        app,
+        [
+            "renew",
+            "--email",
+            "combined@example.com",
+            "--full-name",
+            "Combined",
+            "--c2l-file",
+            str(c2l_file),
+            "--url",
+            "test",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert call_order == ["apply"]
+    assert "Submitted. HTTP 200" in result.output
+
+
+def test_cli_renew_no_apply_skips_apply_phase(
+    mock_server, c2l_file: Path, tmp_state_path: Path, monkeypatch
+) -> None:
+    """`--no-apply` skips the apply phase entirely."""
+    from cite import cli
+
+    apply_called = {"yes": False}
+
+    def boom_if_called(*args, **kwargs):
+        apply_called["yes"] = True
+        raise AssertionError("apply_update should not be called when --no-apply")
+
+    monkeypatch.setattr(cli, "apply_update", boom_if_called)
+
+    result = runner.invoke(
+        app,
+        [
+            "renew",
+            "--email",
+            "noapply@example.com",
+            "--full-name",
+            "NoApply",
+            "--c2l-file",
+            str(c2l_file),
+            "--url",
+            "test",
+            "--expires",
+            _near(),
+            "--no-apply",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert apply_called["yes"] is False
+    assert "Submitted. HTTP 200" in result.output
+
+
+def test_cli_renew_continues_when_apply_phase_fails(
+    mock_server, c2l_file: Path, tmp_state_path: Path, monkeypatch
+) -> None:
+    """An apply-phase failure must NOT block the submit phase."""
+    import typer as _typer
+
+    from cite import cli
+
+    def failing_apply(*args, **kwargs):
+        # Simulate apply_update raising typer.Exit(1) after its own
+        # _alert_on_failure wrapper already dispatched the alert.
+        raise _typer.Exit(1)
+
+    monkeypatch.setattr(cli, "apply_update", failing_apply)
+
+    result = runner.invoke(
+        app,
+        [
+            "renew",
+            "--email",
+            "resilient@example.com",
+            "--full-name",
+            "Resilient",
+            "--c2l-file",
+            str(c2l_file),
+            "--url",
+            "test",
+            "--expires",
+            _near(),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Apply phase failed" in result.output
+    assert "continuing to submit phase" in result.output.lower()
+    assert "Submitted. HTTP 200" in result.output
