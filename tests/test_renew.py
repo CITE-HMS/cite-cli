@@ -228,8 +228,6 @@ def test_cli_renew_requires_url(c2l_file: Path) -> None:
             "Me",
             "--c2l-file",
             str(c2l_file),
-            "--expires",
-            _near(),
         ],
     )
     assert result.exit_code != 0
@@ -251,14 +249,13 @@ def test_cli_renew_rejects_unknown_url(c2l_file: Path) -> None:
             str(c2l_file),
             "--url",
             "http://example.com/",
-            "--expires",
-            _near(),
         ],
     )
     assert result.exit_code != 0
 
 
-def test_cli_renew_no_renewal_needed(c2l_file: Path) -> None:
+def test_cli_renew_no_renewal_needed(c2l_file: Path, monkeypatch, tmp_state_path: Path) -> None:
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=365)))
     result = runner.invoke(
         app,
         [
@@ -271,15 +268,14 @@ def test_cli_renew_no_renewal_needed(c2l_file: Path) -> None:
             str(c2l_file),
             "--url",
             "test",
-            "--expires",
-            _far_future(),
         ],
     )
     assert result.exit_code == 0, result.output
     assert "No renewal needed" in result.output
 
 
-def test_cli_renew_dry_run(c2l_file: Path) -> None:
+def test_cli_renew_dry_run(c2l_file: Path, monkeypatch, tmp_state_path: Path) -> None:
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=3)))
     result = runner.invoke(
         app,
         [
@@ -292,8 +288,6 @@ def test_cli_renew_dry_run(c2l_file: Path) -> None:
             str(c2l_file),
             "--url",
             "test",
-            "--expires",
-            _near(),
             "--dry-run",
         ],
     )
@@ -302,7 +296,8 @@ def test_cli_renew_dry_run(c2l_file: Path) -> None:
     assert "me@example.com" in result.output
 
 
-def test_cli_renew_end_to_end(mock_server, c2l_file: Path) -> None:
+def test_cli_renew_end_to_end(mock_server, c2l_file: Path, monkeypatch, tmp_state_path: Path) -> None:
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=3)))
     result = runner.invoke(
         app,
         [
@@ -315,8 +310,6 @@ def test_cli_renew_end_to_end(mock_server, c2l_file: Path) -> None:
             str(c2l_file),
             "--url",
             "test",
-            "--expires",
-            _near(),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -327,7 +320,8 @@ def test_cli_renew_end_to_end(mock_server, c2l_file: Path) -> None:
     assert "CLI User" in log
 
 
-def test_cli_renew_with_c2l_mock_sentinel(mock_server) -> None:
+def test_cli_renew_with_c2l_mock_sentinel(mock_server, monkeypatch, tmp_state_path: Path) -> None:
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=3)))
     result = runner.invoke(
         app,
         [
@@ -340,8 +334,6 @@ def test_cli_renew_with_c2l_mock_sentinel(mock_server) -> None:
             "mock",
             "--url",
             "test",
-            "--expires",
-            _near(),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -351,7 +343,7 @@ def test_cli_renew_with_c2l_mock_sentinel(mock_server) -> None:
     assert "mock.c2l" in log
 
 
-def test_cli_renew_missing_c2l_exits_nonzero(tmp_path: Path) -> None:
+def test_cli_renew_missing_c2l_exits_nonzero(tmp_path: Path, tmp_state_path: Path) -> None:
     result = runner.invoke(
         app,
         [
@@ -364,8 +356,6 @@ def test_cli_renew_missing_c2l_exits_nonzero(tmp_path: Path) -> None:
             str(tmp_path / "nope.c2l"),
             "--url",
             "test",
-            "--expires",
-            _near(),
         ],
     )
     assert result.exit_code != 0
@@ -380,7 +370,7 @@ def _free_port() -> int:
 
 
 def test_cli_renew_auto_starts_mock_when_port_free(
-    c2l_file: Path, monkeypatch, tmp_path: Path
+    c2l_file: Path, monkeypatch, tmp_path: Path, tmp_state_path: Path
 ) -> None:
     """With --url test and nothing listening, renew should spin up the mock itself."""
     port = _free_port()
@@ -388,7 +378,7 @@ def test_cli_renew_auto_starts_mock_when_port_free(
         URL_ALIASES, RenewTarget.test.value, f"http://127.0.0.1:{port}/"
     )
     monkeypatch.chdir(tmp_path)  # submissions.log lands in CWD
-
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=3)))
     result = runner.invoke(
         app,
         [
@@ -401,8 +391,6 @@ def test_cli_renew_auto_starts_mock_when_port_free(
             str(c2l_file),
             "--url",
             "test",
-            "--expires",
-            _near(),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -420,9 +408,10 @@ def test_cli_renew_auto_starts_mock_when_port_free(
 
 
 def test_cli_renew_reuses_running_mock_when_port_in_use(
-    mock_server, c2l_file: Path
+    mock_server, c2l_file: Path, monkeypatch, tmp_state_path: Path
 ) -> None:
     """If a mock is already running, renew should reuse it (not auto-start)."""
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=3)))
     result = runner.invoke(
         app,
         [
@@ -435,8 +424,6 @@ def test_cli_renew_reuses_running_mock_when_port_in_use(
             str(c2l_file),
             "--url",
             "test",
-            "--expires",
-            _near(),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -457,7 +444,8 @@ def test_safety_net_blocks_real_nikon_url(c2l_file: Path) -> None:
         )
 
 
-def test_cli_renew_force_overrides_window(mock_server, c2l_file: Path) -> None:
+def test_cli_renew_force_overrides_window(mock_server, c2l_file: Path, monkeypatch, tmp_state_path: Path) -> None:
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=365)))
     result = runner.invoke(
         app,
         [
@@ -470,8 +458,6 @@ def test_cli_renew_force_overrides_window(mock_server, c2l_file: Path) -> None:
             str(c2l_file),
             "--url",
             "test",
-            "--expires",
-            _far_future(),
             "--force",
         ],
     )
@@ -541,13 +527,14 @@ def test_get_license_info_all_perpetual(mock_acc) -> None:
         get_license_info()
 
 
-def test_get_license_info_mismatched_hasp_ids(mock_acc) -> None:
+def test_get_license_info_multiple_hasp_keys_returns_earliest(mock_acc) -> None:
+    """Multiple keys attached: returns the entry with the earliest expiry, no crash."""
     mock_acc.xml_body = _acc_feed(
         _nikon_feat(date(2026, 7, 27), haspid="AAAA1111"),
-        _nikon_feat(date(2026, 7, 27), haspid="BBBB2222"),
+        _nikon_feat(date(2026, 6, 1), haspid="BBBB2222"),
     )
-    with pytest.raises(RuntimeError, match="Expected exactly one HASP key"):
-        get_license_info()
+    info = get_license_info()
+    assert info == LicenseInfo(expiration_date=date(2026, 6, 1), hasp_id="BBBB2222")
 
 
 def test_get_license_info_unparsable_body(mock_acc) -> None:
@@ -636,7 +623,10 @@ def test_generate_c2l_writes_file(tmp_path: Path, monkeypatch) -> None:
     result = generate_c2l(output, rus_exe=fake_exe)
     assert result == output
     assert output.read_bytes() == b"fake c2l content"
-    assert captured["cmd"] == [str(fake_exe), "-r", str(output)]
+    # The subprocess is called with the tmp path; the final file is renamed into place.
+    tmp_output = output.with_suffix(output.suffix + ".tmp")
+    assert captured["cmd"] == [str(fake_exe), "-r", str(tmp_output)]
+    assert not tmp_output.exists()
 
 
 def test_generate_c2l_no_rus_found(monkeypatch) -> None:
@@ -681,8 +671,8 @@ def test_generate_c2l_exit_zero_but_no_file_raises(tmp_path: Path, monkeypatch) 
 
 
 def test_generate_c2l_overwrites_stale_file(tmp_path: Path, monkeypatch) -> None:
-    """If a previous .c2l exists at the target path, it must be replaced
-    (otherwise a failed run could leave us submitting stale data)."""
+    """On success the old .c2l is atomically replaced; old content is preserved
+    during the tool run so a failure never deletes the last known-good file."""
     fake_exe = tmp_path / "nis_hasp_update.exe"
     fake_exe.write_bytes(b"")
     output = tmp_path / "out.c2l"
@@ -698,6 +688,7 @@ def test_generate_c2l_overwrites_stale_file(tmp_path: Path, monkeypatch) -> None
 
     generate_c2l(output, rus_exe=fake_exe)
     assert output.read_bytes() == b"FRESH CONTENT"
+    assert not output.with_suffix(output.suffix + ".tmp").exists()
 
 
 # --- CLI dedup integration ---
@@ -758,34 +749,6 @@ def test_cli_renew_appends_hasp_id_to_note(
 
     log = mock_server["log_path"].read_text(encoding="utf-8")
     assert "[HASP ID: 09882A98]" in log
-
-
-def test_cli_renew_does_not_append_hasp_id_when_expires_given(
-    mock_server, c2l_file: Path, tmp_state_path: Path
-) -> None:
-    """When --expires bypasses ACC, the HASP ID is unknown and must NOT be
-    appended (no fake value)."""
-    near = (date.today() + timedelta(days=3)).strftime("%Y-%m-%d")
-    result = runner.invoke(
-        app,
-        [
-            "renew",
-            "--email",
-            "noacc@example.com",
-            "--full-name",
-            "No ACC",
-            "--c2l-file",
-            str(c2l_file),
-            "--url",
-            "test",
-            "--expires",
-            near,
-        ],
-    )
-    assert result.exit_code == 0, result.output
-
-    log = mock_server["log_path"].read_text(encoding="utf-8")
-    assert "HASP ID" not in log
 
 
 def test_cli_renew_dedup_skips_second_run(
@@ -1040,6 +1003,7 @@ def test_cli_renew_no_apply_skips_apply_phase(
         raise AssertionError("apply_update should not be called when --no-apply")
 
     monkeypatch.setattr(cli, "apply_update", boom_if_called)
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=3)))
 
     result = runner.invoke(
         app,
@@ -1053,8 +1017,6 @@ def test_cli_renew_no_apply_skips_apply_phase(
             str(c2l_file),
             "--url",
             "test",
-            "--expires",
-            _near(),
             "--no-apply",
         ],
     )
@@ -1078,6 +1040,8 @@ def test_cli_renew_continues_when_apply_phase_fails(
 
     monkeypatch.setattr(cli, "apply_update", failing_apply)
 
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=3)))
+
     result = runner.invoke(
         app,
         [
@@ -1090,8 +1054,6 @@ def test_cli_renew_continues_when_apply_phase_fails(
             str(c2l_file),
             "--url",
             "test",
-            "--expires",
-            _near(),
         ],
     )
     assert result.exit_code == 0, result.output

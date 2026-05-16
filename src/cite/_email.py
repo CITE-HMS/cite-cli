@@ -112,7 +112,7 @@ def find_candidate_emails(
     )
 
     try:
-        client = imaplib.IMAP4_SSL(host, port)
+        client = imaplib.IMAP4_SSL(host, port, timeout=60)
     except OSError as e:
         raise RuntimeError(f"Could not reach IMAP server {host}:{port}: {e}") from e
 

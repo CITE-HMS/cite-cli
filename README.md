@@ -313,7 +313,6 @@ cite renew --email EMAIL --full-name NAME --url TARGET [OPTIONS]
 | `--url` | | _(required)_ | `CITE_LICENSE_URL` | Renewal target: `nikon` (real endpoint) or `test` (local mock at `http://127.0.0.1:8765/`). |
 | `--c2l-file` | | _(auto-generate)_ | `CITE_LICENSE_C2L_FILE` | Path to a pre-generated `.c2l` file. If omitted, generates one via `nis_hasp_update.exe`. Use `mock` to use the bundled test file (for `--url test`). |
 | `--note` | | `"CITE @ Harvard Medical School"` | `CITE_LICENSE_NOTE` | Free-text note included with the submission. The HASP ID is always appended automatically. |
-| `--expires` | | _(read from dongle)_ | `CITE_LICENSE_EXPIRES` | License expiration date (`YYYY-MM-DD`). If set, reads from this value instead of the HASP dongle, and skips dedup. |
 | `--days-before` | | `14` | | Submit only when the license expires within this many days. |
 | `--dry-run` | `-n` | `False` | | Print what would be submitted without making any HTTP request or generating a `.c2l`. |
 | `--force` | `-f` | `False` | | Submit even if the license is outside the renewal window or was already submitted this cycle. |

@@ -64,7 +64,7 @@ class _FakeIMAP:
     next_mailboxes: ClassVar[dict[str, list[bytes]]] = {}
     login_should_fail: ClassVar[bool] = False
 
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(self, host: str, port: int, **_kwargs: object) -> None:
         self.host = host
         self.port = port
         self.logged_out = False
@@ -578,7 +578,7 @@ def test_apply_l2c_success(tmp_path: Path, monkeypatch) -> None:
         return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(_renew.subprocess, "run", fake_run)
-    monkeypatch.setattr(_renew, "get_license_info", lambda: after)
+    monkeypatch.setattr(_renew, "get_license_info", lambda **_: after)
 
     result = apply_l2c(l2c, rus_exe=fake_exe, before=before)
     assert result == after
@@ -617,7 +617,7 @@ def test_apply_l2c_exit_zero_no_advance_raises(tmp_path: Path, monkeypatch) -> N
         return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(_renew.subprocess, "run", fake_run)
-    monkeypatch.setattr(_renew, "get_license_info", lambda: same)
+    monkeypatch.setattr(_renew, "get_license_info", lambda **_: same)
 
     with pytest.raises(RuntimeError, match=r"expiration.*did not advance"):
         apply_l2c(l2c, rus_exe=fake_exe, before=same)
@@ -836,7 +836,7 @@ def test_cli_apply_update_matches_and_applies(
     )
     calls = {"n": 0}
 
-    def fake_info():
+    def fake_info(**_) -> LicenseInfo:
         calls["n"] += 1
         return before if calls["n"] == 1 else after
 
@@ -905,7 +905,7 @@ def test_cli_apply_update_sends_success_email(
     )
     calls = {"n": 0}
 
-    def fake_info():
+    def fake_info(**_) -> LicenseInfo:
         calls["n"] += 1
         return before if calls["n"] == 1 else after
 
@@ -1172,7 +1172,7 @@ def test_cli_apply_update_reuses_staged_file_on_retry(
     )
     calls: dict = {"n": 0}
 
-    def fake_info() -> LicenseInfo:
+    def fake_info(**_) -> LicenseInfo:
         calls["n"] += 1
         return before if calls["n"] == 1 else after
 

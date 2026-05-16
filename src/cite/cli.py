@@ -409,15 +409,6 @@ def renew(
         envvar="CITE_LICENSE_NOTE",
         help="Free-text note included with the submission.",
     ),
-    expires: datetime | None = typer.Option(
-        None,
-        "--expires",
-        envvar="CITE_LICENSE_EXPIRES",
-        formats=["%Y-%m-%d"],
-        help="License expiration date (YYYY-MM-DD). "
-        "If omitted, reads it from the local Sentinel ACC (HASP dongle). "
-        "When given explicitly, submission dedup is skipped.",
-    ),
     days_before: int = typer.Option(
         14,
         "--days-before",
@@ -449,8 +440,10 @@ def renew(
 
     1. Apply phase (skip with `--no-apply`): if `~/.cite/renew_state.json`
        exists, poll Gmail for Nikon's `.l2c` reply and apply it via
-       `nis_hasp_update.exe -a`. Sends an URGENT email if the license is
-       ≤4 days from expiry and no reply has arrived yet.
+       `nis_hasp_update.exe -a`. Detects and clears stale state if the
+       license was already renewed manually. Sends an URGENT email (at most
+       once per 20 h) if the license is ≤4 days from expiry and no reply
+       has arrived yet.
 
     2. Submit phase: read the dongle's expiration via ACC, check the
        renewal window, dedup against any prior submission, and POST a fresh
@@ -459,6 +452,11 @@ def renew(
     The two phases are independent — a failure in one does not block the
     other; each dispatches its own failure alert.
     """
+    # Pre-check: if a pending state exists and the dongle's expiry already exceeds
+    # it, the license was renewed manually. Clear the stale state before the
+    # apply phase so it doesn't fire urgency alerts or attempt re-applies.
+    _clear_stale_renew_state_if_renewed()
+
     # Phase 1: try to apply any pending Nikon reply. Failures in this
     # phase trigger their own alert email (via apply-update's wrapper) and
     # do NOT block the submit phase.
@@ -498,20 +496,15 @@ def renew(
                 typer.secho(f"{_ts()}{e}", fg="red", err=True)
                 raise typer.Exit(1) from e
 
-        hasp_id: str | None = None
-        if expires:
-            exp_date = expires.date()
-        else:
-            try:
-                info = get_license_info()
-            except RuntimeError as e:
-                typer.secho(f"{_ts()}{e}", fg="red", err=True)
-                raise typer.Exit(1) from e
-            exp_date, hasp_id = info.expiration_date, info.hasp_id
+        try:
+            info = get_license_info()
+        except RuntimeError as e:
+            typer.secho(f"{_ts()}{e}", fg="red", err=True)
+            raise typer.Exit(1) from e
+        exp_date, hasp_id = info.expiration_date, info.hasp_id
 
-        if hasp_id is not None:
-            # Match the hex form Nikon's tools display (e.g. "09882A98").
-            note = f"{note} [HASP ID: {hasp_id_to_hex(hasp_id)}]"
+        # Match the hex form Nikon's tools display (e.g. "09882A98").
+        note = f"{note} [HASP ID: {hasp_id_to_hex(hasp_id)}]"
 
         days_left = (exp_date - datetime.now().date()).days
         typer.secho(
@@ -527,7 +520,7 @@ def renew(
             )
             return
 
-        if not force and hasp_id is not None:
+        if not force:
             state = load_renew_state()
             if state and state.expiration_date == exp_date and state.hasp_id == hasp_id:
                 typer.secho(
@@ -565,14 +558,15 @@ def renew(
                     fg=(140, 140, 140),
                 )
             typer.secho(f"  note      = {note}", fg=(140, 140, 140))
-            if hasp_id is not None:
-                typer.secho(
-                    f"  state     = {RENEW_STATE_PATH} (hasp_id={hasp_id})",
-                    fg=(140, 140, 140),
-                )
+            typer.secho(
+                f"  state     = {RENEW_STATE_PATH} (hasp_id={hasp_id})",
+                fg=(140, 140, 140),
+            )
             return
 
-        assert c2l_path is not None  # generated above when not in dry-run
+        if c2l_path is None:
+            typer.secho(f"{_ts()}Internal error: no .c2l path available.", fg="red", err=True)
+            raise typer.Exit(1)
         typer.secho(f"{_ts()}Submitting renewal request to {url} ...")
         with _auto_mock_server_if_needed(target, url):
             try:
@@ -591,15 +585,14 @@ def renew(
             f"{_ts()}Submitted. HTTP {resp.status_code}.", fg="green", bold=True
         )
 
-        if hasp_id is not None:
-            save_renew_state(
-                RenewState(
-                    expiration_date=exp_date,
-                    hasp_id=hasp_id,
-                    submitted_at=datetime.now(timezone.utc),
-                    url=url,
-                )
+        save_renew_state(
+            RenewState(
+                expiration_date=exp_date,
+                hasp_id=hasp_id,
+                submitted_at=datetime.now(timezone.utc),
+                url=url,
             )
+        )
 
 
 @app.command("license")
@@ -833,9 +826,14 @@ def apply_update(
             )
             verify_name = RECEIVED_L2C_PATH.name
         else:
+            # The winner's file is no longer staged locally (e.g. deleted between
+            # runs). Evict it from the cache so the next run re-downloads it.
+            cache.pop(winner.message_id, None)
+            save_checked_emails(cache)
             typer.secho(
-                f"{_ts()}Internal error: matching email had no downloaded file.",
-                fg="red",
+                f"{_ts()}Staged .l2c for winner is missing — removed from cache. "
+                "Will re-download on the next run.",
+                fg="yellow",
                 err=True,
             )
             raise typer.Exit(1)
@@ -1027,15 +1025,56 @@ def _apply_update_dry_run(  # type: ignore[no-untyped-def]
     )
 
 
+def _clear_stale_renew_state_if_renewed() -> None:
+    """Clear renew_state.json if the dongle's expiry already exceeds the pending state.
+
+    Called at the start of `cite renew` so that a manually-applied license
+    doesn't trigger urgency alerts or failed re-apply attempts in the
+    apply phase.
+    """
+    from cite._renew import RENEW_STATE_PATH, get_license_info, load_renew_state
+
+    state = load_renew_state()
+    if state is None:
+        return
+    try:
+        current = get_license_info()
+    except RuntimeError:
+        return
+    if current.expiration_date > state.expiration_date:
+        typer.secho(
+            f"{_ts()}License already renewed "
+            f"({state.expiration_date.isoformat()} → "
+            f"{current.expiration_date.isoformat()}). "
+            "Clearing stale pending state.",
+            fg="green",
+        )
+        RENEW_STATE_PATH.unlink(missing_ok=True)
+
+
 def _maybe_send_urgency(state, send_urgency_alert) -> None:  # type: ignore[no-untyped-def]
-    """Send the URGENT alert if we're within URGENCY_DAYS of expiration."""
+    """Send the URGENT alert if we're within URGENCY_DAYS of expiration.
+
+    Rate-limited to at most one alert per 20 hours so frequent Task Scheduler
+    runs don't flood the inbox.
+    """
     from cite._notify import URGENCY_DAYS
+    from cite._renew import load_last_urgency, save_last_urgency
 
     days_remaining = (state.expiration_date - datetime.now().date()).days
     if days_remaining > URGENCY_DAYS:
         return
+
+    last = load_last_urgency()
+    if last is not None:
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        if (datetime.now(tz=timezone.utc) - last).total_seconds() < 20 * 3600:
+            return
+
     sent = send_urgency_alert(state, days_remaining)
     if sent:
+        save_last_urgency(datetime.now(tz=timezone.utc))
         typer.secho(
             f"{_ts()}URGENT alert email sent (license has "
             f"{days_remaining} day(s) left).",
