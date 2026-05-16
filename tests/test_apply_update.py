@@ -866,6 +866,75 @@ def test_cli_apply_update_matches_and_applies(
     assert cache["<other-pc-1@x>"]["haspid"] != state.hasp_id
 
 
+def test_cli_apply_update_sends_success_email(
+    fake_imap,
+    fake_smtp,
+    alert_creds,
+    monkeypatch,
+    tmp_state_path: Path,
+    tmp_checked_emails: Path,
+    tmp_incoming: Path,
+) -> None:
+    """A successful apply sends a confirmation email with HASP ID and new expiry."""
+    state = _setup_pending_state(monkeypatch, tmp_state_path, days_until_exp=10)
+
+    fake_imap.next_mailboxes = {
+        "INBOX": [
+            _make_email(
+                message_id="<ours@success>",
+                date_hdr="Fri, 15 May 2026 10:00:00 +0000",
+                body=_VALID_BODY,
+            )
+        ]
+    }
+
+    _install_session_for_token_map(
+        monkeypatch,
+        {"e556d5faf993ece4b7eaaa56fa5be2ad": _fake_response("09882A98")},
+    )
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(_renew.subprocess, "run", fake_run)
+
+    before = LicenseInfo(expiration_date=state.expiration_date, hasp_id=state.hasp_id)
+    after = LicenseInfo(
+        expiration_date=state.expiration_date + timedelta(days=90),
+        hasp_id=state.hasp_id,
+    )
+    calls = {"n": 0}
+
+    def fake_info():
+        calls["n"] += 1
+        return before if calls["n"] == 1 else after
+
+    monkeypatch.setattr(_renew, "get_license_info", fake_info)
+
+    fake_exe = tmp_state_path.parent / "nis_hasp_update.exe"
+    fake_exe.write_bytes(b"")
+    monkeypatch.setenv("CITE_RUS_EXE", str(fake_exe))
+
+    result = _invoke_apply_update()
+    assert result.exit_code == 0, result.output
+    assert "Renewal confirmation email sent." in result.output
+
+    # Find the success email (not the SMTP calls from urgency/failure paths).
+    success_msgs = [
+        inst.sent
+        for inst in fake_smtp.instances
+        if inst.sent is not None
+        and "NIS-Elements license renewed" in (inst.sent["Subject"] or "")
+    ]
+    assert len(success_msgs) == 1, "Expected exactly one success email"
+    msg = success_msgs[0]
+    body = msg.get_content()
+    assert "09882A98" in body  # HASP ID hex
+    assert "159918744" in body  # HASP ID decimal
+    assert state.expiration_date.isoformat() in body  # old expiry
+    assert after.expiration_date.isoformat() in body  # new expiry
+
+
 def test_cli_apply_update_no_match_in_urgency_window(
     fake_imap,
     fake_smtp,

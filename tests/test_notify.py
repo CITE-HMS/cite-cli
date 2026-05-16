@@ -11,7 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from cite import _notify, _renew
-from cite._notify import send_failure_email
+from cite._notify import send_apply_success_email, send_failure_email
 from cite._renew import LicenseInfo
 from cite.cli import app
 
@@ -342,3 +342,58 @@ def test_cli_test_alert_smtp_failure_shows_troubleshooting(monkeypatch) -> None:
     assert result.exit_code == 1
     assert "SMTP send failed" in result.output
     assert "App Password" in result.output
+
+
+# --- send_apply_success_email ---
+
+
+def _make_license(exp: date, hasp_id: str = "159918744") -> LicenseInfo:
+    return LicenseInfo(expiration_date=exp, hasp_id=hasp_id)
+
+
+def test_send_apply_success_email_noop_when_unconfigured(fake_smtp) -> None:
+    before = _make_license(date(2026, 6, 5))
+    after = _make_license(date(2026, 9, 5))
+    assert send_apply_success_email(before, after) is False
+    assert fake_smtp.instances == []
+
+
+def test_send_apply_success_email_sends_when_configured(fake_smtp, monkeypatch) -> None:
+    _set_creds(monkeypatch)
+    before = _make_license(date(2026, 6, 5))
+    after = _make_license(date(2026, 9, 5))
+
+    assert send_apply_success_email(before, after) is True
+
+    assert len(fake_smtp.instances) == 1
+    sent = fake_smtp.instances[0]
+    assert sent.starttls_called is True
+    assert sent.login_args == ("sender@gmail.com", "app-password")
+    assert sent.sent is not None
+
+    msg = sent.sent
+    assert msg["From"] == "sender@gmail.com"
+    assert msg["To"] == "ops@example.com"
+    assert "NIS-Elements license renewed" in msg["Subject"]
+
+    body = msg.get_content()
+    assert "09882A98" in body  # hex HASP ID (decimal 159918744)
+    assert "159918744" in body  # decimal HASP ID
+    assert "2026-06-05" in body  # old expiry
+    assert "2026-09-05" in body  # new expiry
+    assert "92" in body  # days gained (92 days between Jun 5 and Sep 5)
+
+
+def test_send_apply_success_email_swallows_smtp_errors(
+    monkeypatch,
+) -> None:
+    _set_creds(monkeypatch)
+
+    class _Broken:
+        def __init__(self, *a: object, **k: object) -> None:
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(_notify.smtplib, "SMTP", _Broken)
+    before = _make_license(date(2026, 6, 5))
+    after = _make_license(date(2026, 9, 5))
+    assert send_apply_success_email(before, after) is False

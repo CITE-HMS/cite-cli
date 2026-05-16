@@ -646,7 +646,7 @@ def apply_update(
     import shutil
 
     from cite._email import find_candidate_emails
-    from cite._notify import send_urgency_alert
+    from cite._notify import send_apply_success_email, send_urgency_alert
     from cite._renew import (
         APPLIED_L2C_DIR,
         INCOMING_DIR,
@@ -806,6 +806,9 @@ def apply_update(
             fg="green",
             bold=True,
         )
+
+        if send_apply_success_email(before, after):
+            typer.secho(f"{_ts()}Renewal confirmation email sent.", fg="green")
 
         # 7. Archive and clean up
         APPLIED_L2C_DIR.mkdir(parents=True, exist_ok=True)
