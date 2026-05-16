@@ -201,7 +201,7 @@ This writes the current expiry as the baseline. Subsequent daily runs are no-ops
 **Task Scheduler arguments** (runs daily, same trigger time as `cite renew`):
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite notify-renewal >> %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
+/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite notify-renewal > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 ---
