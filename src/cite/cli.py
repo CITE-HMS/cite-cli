@@ -711,6 +711,7 @@ def apply_update(
         load_checked_emails,
         load_renew_state,
         save_checked_emails,
+        save_last_notified,
     )
 
     if dry_run:
@@ -872,6 +873,7 @@ def apply_update(
 
         if send_apply_success_email(before, after):
             typer.secho(f"{_ts()}Renewal confirmation email sent.", fg="green")
+        save_last_notified(after)
 
         # 7. Archive and clean up
         APPLIED_L2C_DIR.mkdir(parents=True, exist_ok=True)
@@ -1040,6 +1042,103 @@ def _maybe_send_urgency(state, send_urgency_alert) -> None:  # type: ignore[no-u
             fg="yellow",
             err=True,
         )
+
+
+@app.command("notify-renewal")
+def notify_renewal(
+    seed: bool = typer.Option(
+        False,
+        "--seed",
+        help="Record the current dongle state as the notification baseline "
+        "without sending an email. Run once on a freshly-set-up machine.",
+    ),
+) -> None:
+    """Send the renewal-confirmation email if the dongle's expiration has
+    advanced since the last notification. Idempotent: re-running with no
+    change is a no-op.
+
+    Useful when a license was applied manually via Nikon's HASP Update GUI
+    rather than through `cite apply-update`.
+    """
+    from cite._notify import _is_configured, send_apply_success_email
+    from cite._renew import (
+        get_license_info,
+        load_last_notified,
+        save_last_notified,
+    )
+
+    with _alert_on_failure("notify-renewal"):
+        try:
+            current = get_license_info()
+        except RuntimeError as e:
+            typer.secho(f"{_ts()}{e}", fg="red", err=True)
+            raise typer.Exit(1) from e
+
+        if seed:
+            save_last_notified(current)
+            typer.secho(
+                f"{_ts()}Baseline set: HASP {current.hasp_id}, "
+                f"expires {current.expiration_date.isoformat()}. No email sent.",
+                fg="green",
+                bold=True,
+            )
+            return
+
+        last = load_last_notified()
+        if last is None:
+            typer.secho(
+                f"{_ts()}No notification baseline found. Run "
+                "`cite notify-renewal --seed` once to initialise "
+                "(records the current expiry without sending an email).",
+                fg="yellow",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        if last.hasp_id != current.hasp_id:
+            typer.secho(
+                f"{_ts()}HASP ID changed ({last.hasp_id} → {current.hasp_id}). "
+                "Updating baseline without sending an email.",
+                fg="yellow",
+            )
+            save_last_notified(current)
+            return
+
+        if current.expiration_date <= last.expiration_date:
+            typer.secho(
+                f"{_ts()}Already notified about "
+                f"{last.expiration_date.isoformat()}; no-op.",
+                fg="green",
+            )
+            return
+
+        # Expiration has advanced — send the confirmation email.
+        configured = _is_configured()
+        sent = send_apply_success_email(before=last, after=current)
+        if sent:
+            typer.secho(f"{_ts()}Renewal confirmation email sent.", fg="green")
+        elif configured:
+            # Configured but SMTP failed — leave tracking unchanged so next run retries.
+            typer.secho(
+                f"{_ts()}SMTP error: renewal confirmation email not sent. "
+                "Tracking file not updated; will retry on next run.",
+                fg="yellow",
+                err=True,
+            )
+            raise typer.Exit(1)
+        else:
+            typer.secho(
+                f"{_ts()}SMTP not configured; skipping email.",
+                fg="yellow",
+            )
+
+        # Update tracking only when email delivered or SMTP not configured.
+        if sent or not configured:
+            save_last_notified(current)
+            typer.secho(
+                f"{_ts()}Tracking file updated: {current.expiration_date.isoformat()}.",
+                fg="green",
+            )
 
 
 @app.command("test-alert")
