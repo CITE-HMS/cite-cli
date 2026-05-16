@@ -27,9 +27,11 @@ LINK_RE = re.compile(
 DEFAULT_IMAP_HOST = "imap.gmail.com"
 DEFAULT_IMAP_PORT = 993
 
-# Mailboxes to search. Order matters only for dedup logging — we collect
-# everything and dedup by Message-ID at the end.
-SEARCH_MAILBOXES = ("INBOX", '"[Gmail]/All Mail"', '"[Gmail]/Spam"')
+# Mailboxes to search. "All Mail" is a superset of INBOX in Gmail, so
+# searching INBOX separately would double-fetch every message already in
+# the inbox (dedup by Message-ID prevents duplicates in results, but wastes
+# IMAP FETCH round-trips). Spam is included as a safety net.
+SEARCH_MAILBOXES = ('"[Gmail]/All Mail"', '"[Gmail]/Spam"')
 
 
 @dataclass(frozen=True)

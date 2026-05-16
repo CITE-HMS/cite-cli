@@ -208,8 +208,25 @@ def save_renew_state(state: RenewState, path: Path | None = None) -> None:
 
 
 def should_renew(expiration_date: date, days_before: int) -> bool:
+    """Return True if a renewal should be submitted.
+
+    Triggers when the license is within *days_before* days of expiry **or
+    already expired** (days_left < 0).
+    """
     days_left = (expiration_date - date.today()).days
-    return 0 <= days_left <= days_before
+    return days_left <= days_before
+
+
+def hasp_id_to_hex(hasp_id: str) -> str:
+    """Convert a decimal HASP ID string to 8-char uppercase hex.
+
+    Returns the string unchanged if it is not a valid integer (e.g. already
+    in hex or an unknown format), so callers never need a try/except.
+    """
+    try:
+        return f"{int(hasp_id):08X}"
+    except ValueError:
+        return hasp_id
 
 
 def discover_rus_exe() -> Path | None:
@@ -595,4 +612,9 @@ def submit_license_form(
         }
         resp = requests.post(url, data=data, files=files, timeout=timeout)
     resp.raise_for_status()
+    if not resp.content:
+        raise RuntimeError(
+            f"Nikon returned an empty response body from {url}. "
+            "The submission may not have been processed."
+        )
     return resp

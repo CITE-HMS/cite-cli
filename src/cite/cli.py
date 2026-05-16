@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import typer
 
 import cite
-from cite._renew import RenewTarget
+from cite._renew import RenewTarget, hasp_id_to_hex
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 STATE = {"verbose": False}
@@ -435,8 +435,45 @@ def renew(
         "--force",
         help="Submit even if the license is not within the renewal window.",
     ),
+    no_apply: bool = typer.Option(
+        False,
+        "--no-apply",
+        help="Skip the apply phase (poll Gmail for Nikon's reply and apply "
+        "the .l2c). By default `cite renew` runs apply first, then submit; "
+        "use this for testing the submit phase in isolation.",
+    ),
 ) -> None:
-    """Renew the NIS-Elements Time-DEMO license by submitting the dealer form."""
+    """Run the renewal cycle: apply Nikon's reply if pending, then submit if needed.
+
+    A daily `cite renew` does both halves of the loop:
+
+    1. Apply phase (skip with `--no-apply`): if `~/.cite/renew_state.json`
+       exists, poll Gmail for Nikon's `.l2c` reply and apply it via
+       `nis_hasp_update.exe -a`. Sends an URGENT email if the license is
+       ≤4 days from expiry and no reply has arrived yet.
+
+    2. Submit phase: read the dongle's expiration via ACC, check the
+       renewal window, dedup against any prior submission, and POST a fresh
+       `.c2l` to Nikon if needed.
+
+    The two phases are independent — a failure in one does not block the
+    other; each dispatches its own failure alert.
+    """
+    # Phase 1: try to apply any pending Nikon reply. Failures in this
+    # phase trigger their own alert email (via apply-update's wrapper) and
+    # do NOT block the submit phase.
+    if not no_apply:
+        try:
+            apply_update(dry_run=False)
+        except typer.Exit as e:
+            if e.exit_code:
+                typer.secho(
+                    f"{_ts()}Apply phase failed (alert dispatched if "
+                    f"configured). Continuing to submit phase.",
+                    fg="yellow",
+                    err=True,
+                )
+
     with _alert_on_failure("renew"):
         from cite._renew import (
             GENERATED_C2L_PATH,
@@ -474,11 +511,7 @@ def renew(
 
         if hasp_id is not None:
             # Match the hex form Nikon's tools display (e.g. "09882A98").
-            try:
-                hasp_id_hex = f"{int(hasp_id):08X}"
-            except ValueError:
-                hasp_id_hex = hasp_id
-            note = f"{note} [HASP ID: {hasp_id_hex}]"
+            note = f"{note} [HASP ID: {hasp_id_to_hex(hasp_id)}]"
 
         days_left = (exp_date - datetime.now().date()).days
         typer.secho(
@@ -784,17 +817,29 @@ def apply_update(
         # 5. Promote and verify (defense-in-depth: re-check HASPID from
         #    filename AND from file contents before applying).
         src = tmp_files.get(winner.message_id)
-        if src is None:
+        if src is not None:
+            RECEIVED_L2C_PATH.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(RECEIVED_L2C_PATH))
+            verify_name = src.name
+        elif RECEIVED_L2C_PATH.is_file():
+            # The winner was already in the checked-emails cache (downloaded
+            # and staged in a prior run that failed during apply_l2c). Reuse
+            # the file that was left at RECEIVED_L2C_PATH rather than
+            # crashing with "Internal error".
+            typer.secho(
+                f"{_ts()}Reusing previously staged {RECEIVED_L2C_PATH.name}.",
+                fg="bright_blue",
+            )
+            verify_name = RECEIVED_L2C_PATH.name
+        else:
             typer.secho(
                 f"{_ts()}Internal error: matching email had no downloaded file.",
                 fg="red",
                 err=True,
             )
             raise typer.Exit(1)
-        RECEIVED_L2C_PATH.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), str(RECEIVED_L2C_PATH))
         try:
-            verified_haspid = extract_haspid_from_l2c_filename(src.name)
+            verified_haspid = extract_haspid_from_l2c_filename(verify_name)
         except RuntimeError:
             verified_haspid = extract_haspid_from_l2c_content(RECEIVED_L2C_PATH)
         if verified_haspid != state.hasp_id:
@@ -830,10 +875,7 @@ def apply_update(
 
         # 7. Archive and clean up
         APPLIED_L2C_DIR.mkdir(parents=True, exist_ok=True)
-        try:
-            hasp_hex = f"{int(state.hasp_id):08X}"
-        except ValueError:
-            hasp_hex = state.hasp_id
+        hasp_hex = hasp_id_to_hex(state.hasp_id)
         archive_path = (
             APPLIED_L2C_DIR / f"{hasp_hex}_{before.expiration_date.isoformat()}_to_"
             f"{after.expiration_date.isoformat()}.l2c"
@@ -890,7 +932,7 @@ def _apply_update_dry_run(  # type: ignore[no-untyped-def]
             f"{_ts()}DRY RUN: searching since "
             f"{state.submitted_at.date().isoformat()}; will mark candidate "
             f"matching hasp_id={state.hasp_id} (hex "
-            f"{int(state.hasp_id):08X}).",
+            f"{hasp_id_to_hex(state.hasp_id)}).",
             fg=(140, 140, 140),
         )
         since = state.submitted_at

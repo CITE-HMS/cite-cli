@@ -153,7 +153,7 @@ _VALID_BODY = (
 
 def test_find_candidate_emails_returns_match(fake_imap, alert_creds) -> None:
     fake_imap.next_mailboxes = {
-        "INBOX": [
+        "[Gmail]/All Mail": [
             _make_email(
                 message_id="<abc@example>",
                 date_hdr="Fri, 15 May 2026 10:00:00 +0000",
@@ -176,8 +176,8 @@ def test_find_candidate_emails_dedups_across_mailboxes(fake_imap, alert_creds) -
         body=_VALID_BODY,
     )
     fake_imap.next_mailboxes = {
-        "INBOX": [same],
         "[Gmail]/All Mail": [same],
+        "[Gmail]/Spam": [same],
     }
     since = datetime(2026, 5, 14, tzinfo=timezone.utc)
     results = find_candidate_emails(since)
@@ -187,7 +187,7 @@ def test_find_candidate_emails_dedups_across_mailboxes(fake_imap, alert_creds) -
 
 def test_find_candidate_emails_empty_when_no_match(fake_imap, alert_creds) -> None:
     fake_imap.next_mailboxes = {
-        "INBOX": [
+        "[Gmail]/All Mail": [
             _make_email(
                 message_id="<noise@example>",
                 date_hdr="Fri, 15 May 2026 10:00:00 +0000",
@@ -213,7 +213,7 @@ def test_find_candidate_emails_login_failure_raises(fake_imap, alert_creds) -> N
 
 def test_find_candidate_emails_returns_newest_first(fake_imap, alert_creds) -> None:
     fake_imap.next_mailboxes = {
-        "INBOX": [
+        "[Gmail]/All Mail": [
             _make_email(
                 message_id="<older@example>",
                 date_hdr="Wed, 13 May 2026 10:00:00 +0000",
@@ -738,7 +738,7 @@ def test_cli_apply_update_no_candidates(
     tmp_incoming: Path,
 ) -> None:
     _setup_pending_state(monkeypatch, tmp_state_path, days_until_exp=10)
-    fake_imap.next_mailboxes = {"INBOX": []}
+    fake_imap.next_mailboxes = {"[Gmail]/All Mail": []}
 
     result = _invoke_apply_update()
     assert result.exit_code == 0, result.output
@@ -793,7 +793,7 @@ def test_cli_apply_update_matches_and_applies(
     state = _setup_pending_state(monkeypatch, tmp_state_path, days_until_exp=10)
 
     fake_imap.next_mailboxes = {
-        "INBOX": [
+        "[Gmail]/All Mail": [
             _make_email(
                 message_id="<other-pc-1@x>",
                 date_hdr="Thu, 14 May 2026 10:00:00 +0000",
@@ -879,7 +879,7 @@ def test_cli_apply_update_sends_success_email(
     state = _setup_pending_state(monkeypatch, tmp_state_path, days_until_exp=10)
 
     fake_imap.next_mailboxes = {
-        "INBOX": [
+        "[Gmail]/All Mail": [
             _make_email(
                 message_id="<ours@success>",
                 date_hdr="Fri, 15 May 2026 10:00:00 +0000",
@@ -947,7 +947,7 @@ def test_cli_apply_update_no_match_in_urgency_window(
     """No matching candidate AND < 4 days to expiry → URGENT email dispatched."""
     _setup_pending_state(monkeypatch, tmp_state_path, days_until_exp=3)
     fake_imap.next_mailboxes = {
-        "INBOX": [
+        "[Gmail]/All Mail": [
             _make_email(
                 message_id="<not-ours@x>",
                 date_hdr="Fri, 15 May 2026 10:00:00 +0000",
@@ -988,7 +988,7 @@ def test_cli_apply_update_no_match_outside_urgency_window(
 ) -> None:
     """No matching candidate, plenty of days left → no URGENT email."""
     _setup_pending_state(monkeypatch, tmp_state_path, days_until_exp=20)
-    fake_imap.next_mailboxes = {"INBOX": []}
+    fake_imap.next_mailboxes = {"[Gmail]/All Mail": []}
 
     result = _invoke_apply_update()
     assert result.exit_code == 0, result.output
@@ -1017,7 +1017,7 @@ def test_cli_apply_update_cache_skips_known_other_pc(
         }
     )
     fake_imap.next_mailboxes = {
-        "INBOX": [
+        "[Gmail]/All Mail": [
             _make_email(
                 message_id="<not-ours@x>",
                 date_hdr="Fri, 15 May 2026 10:00:00 +0000",
@@ -1047,7 +1047,7 @@ def test_cli_apply_update_dry_run_no_state(
 ) -> None:
     """No state file is fine in dry-run — runs in pure-diagnostic mode."""
     fake_imap.next_mailboxes = {
-        "INBOX": [
+        "[Gmail]/All Mail": [
             _make_email(
                 message_id="<x@y>",
                 date_hdr="Fri, 15 May 2026 10:00:00 +0000",
@@ -1086,7 +1086,7 @@ def test_cli_apply_update_dry_run_marks_match(
     state = _setup_pending_state(monkeypatch, tmp_state_path)
     # state.hasp_id is "159918744" decimal = 09882A98 hex.
     fake_imap.next_mailboxes = {
-        "INBOX": [
+        "[Gmail]/All Mail": [
             _make_email(
                 message_id="<ours@x>",
                 date_hdr="Fri, 15 May 2026 10:00:00 +0000",
@@ -1112,3 +1112,80 @@ def test_cli_apply_update_dry_run_marks_match(
     # State file must be untouched.
     assert tmp_state_path.exists()
     assert state.hasp_id == "159918744"  # sanity
+
+
+def test_cli_apply_update_reuses_staged_file_on_retry(
+    fake_imap,
+    fake_smtp,
+    alert_creds,
+    monkeypatch,
+    tmp_state_path: Path,
+    tmp_checked_emails: Path,
+    tmp_incoming: Path,
+) -> None:
+    """Regression: if apply_l2c failed in a prior run, both RECEIVED_L2C_PATH
+    and the checked-emails cache entry persist. On retry the command must
+    reuse the staged file instead of crashing with 'Internal error'."""
+    state = _setup_pending_state(monkeypatch, tmp_state_path, days_until_exp=10)
+
+    # Simulate the state left by an interrupted prior run:
+    #  - cache has the email already recorded with the matching HASP ID
+    #  - RECEIVED_L2C_PATH holds the staged .l2c from that run
+    save_checked_emails(
+        {
+            "<ours@retry>": {
+                "haspid": state.hasp_id,  # "159918744" decimal = 09882A98 hex
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+            }
+        }
+    )
+    staged = _renew.RECEIVED_L2C_PATH
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_bytes(_REAL_L2C_FORMAT.replace(b"{haspid}", b"09882A98"))
+
+    # IMAP still has the same email (prior run did not delete it).
+    fake_imap.next_mailboxes = {
+        "[Gmail]/All Mail": [
+            _make_email(
+                message_id="<ours@retry>",
+                date_hdr="Fri, 15 May 2026 10:00:00 +0000",
+                body=_VALID_BODY,
+            )
+        ]
+    }
+
+    # No download should occur — the candidate is already cached.
+    def factory() -> None:
+        raise AssertionError("Session() must not be created for a cached candidate")
+
+    _install_sessions(monkeypatch, factory)
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(_renew.subprocess, "run", fake_run)
+
+    before = LicenseInfo(expiration_date=state.expiration_date, hasp_id=state.hasp_id)
+    after = LicenseInfo(
+        expiration_date=state.expiration_date + timedelta(days=90),
+        hasp_id=state.hasp_id,
+    )
+    calls: dict = {"n": 0}
+
+    def fake_info() -> LicenseInfo:
+        calls["n"] += 1
+        return before if calls["n"] == 1 else after
+
+    monkeypatch.setattr(_renew, "get_license_info", fake_info)
+
+    fake_exe = tmp_state_path.parent / "nis_hasp_update.exe"
+    fake_exe.write_bytes(b"")
+    monkeypatch.setenv("CITE_RUS_EXE", str(fake_exe))
+
+    result = _invoke_apply_update()
+    assert result.exit_code == 0, result.output
+    assert "Reusing previously staged" in result.output
+    assert "Applied. Expiration" in result.output
+    assert "Cycle complete" in result.output
+    # State file must be gone after a successful apply.
+    assert not tmp_state_path.exists()
