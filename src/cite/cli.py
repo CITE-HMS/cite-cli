@@ -624,6 +624,361 @@ def request_file(
     )
 
 
+@app.command("apply-update")
+def apply_update(
+    dry_run: bool = typer.Option(
+        False,
+        "-n",
+        "--dry-run",
+        help="Poll IMAP, download candidate .l2c files into a tmp dir, and "
+        "report what was found — but do NOT call nis_hasp_update.exe, "
+        "do NOT write state, do NOT touch the production cache. Useful "
+        "for verifying inbox + download on any platform (Mac / Linux), "
+        "without a HASP dongle present.",
+    ),
+) -> None:
+    """Poll Gmail for Nikon's .l2c reply, verify, and apply it to the HASP dongle.
+
+    Daily-schedulable. No-ops cleanly when there's no pending renewal,
+    or no reply yet. Sends an URGENT email if the license is within 4
+    days of expiration and no reply has arrived.
+    """
+    import shutil
+
+    from cite._email import find_candidate_emails
+    from cite._notify import send_urgency_alert
+    from cite._renew import (
+        APPLIED_L2C_DIR,
+        INCOMING_DIR,
+        RECEIVED_L2C_PATH,
+        RENEW_STATE_PATH,
+        apply_l2c,
+        download_l2c,
+        extract_haspid_from_l2c_content,
+        extract_haspid_from_l2c_filename,
+        get_license_info,
+        load_checked_emails,
+        load_renew_state,
+        save_checked_emails,
+    )
+
+    if dry_run:
+        _apply_update_dry_run(
+            find_candidate_emails,
+            download_l2c,
+            extract_haspid_from_l2c_filename,
+            extract_haspid_from_l2c_content,
+            load_renew_state,
+        )
+        return
+
+    with _alert_on_failure("apply-update"):
+        # 1. Pre-check state
+        state = load_renew_state()
+        if state is None:
+            typer.secho(
+                f"{_ts()}Nothing to apply (no pending renewal on this PC).",
+                fg="green",
+            )
+            return
+
+        # 2. Poll IMAP for candidates
+        typer.secho(
+            f"{_ts()}Polling Gmail for replies since "
+            f"{state.submitted_at.date().isoformat()} ...",
+            fg="bright_blue",
+        )
+        try:
+            candidates = find_candidate_emails(since=state.submitted_at)
+        except RuntimeError as e:
+            typer.secho(f"{_ts()}{e}", fg="red", err=True)
+            raise typer.Exit(1) from e
+
+        if not candidates:
+            _maybe_send_urgency(state, send_urgency_alert)
+            typer.secho(
+                f"{_ts()}No Nikon reply found yet.",
+                fg="yellow",
+            )
+            return
+
+        # 3. Per-candidate triage (load cache, download new ones, parse HASPID
+        #    from the Content-Disposition filename Nikon serves).
+        cache = load_checked_emails()
+        tmp_files: dict[str, Path] = {}
+        for cand in candidates:
+            if cand.message_id in cache:
+                continue
+            typer.secho(
+                f"{_ts()}Downloading candidate from {cand.sender} "
+                f"(token={cand.request_token[:8]}...) ...",
+                fg=(140, 140, 140),
+            )
+            try:
+                saved_path, saved_name = download_l2c(cand.download_url, INCOMING_DIR)
+            except RuntimeError as e:
+                typer.secho(f"{_ts()}Skipping candidate ({e})", fg="yellow", err=True)
+                continue
+            try:
+                haspid = extract_haspid_from_l2c_filename(saved_name)
+            except RuntimeError:
+                # Filename didn't match Nikon's `<HEX>.l2c` convention;
+                # fall back to parsing file contents before giving up.
+                try:
+                    haspid = extract_haspid_from_l2c_content(saved_path)
+                except RuntimeError as e2:
+                    typer.secho(
+                        f"{_ts()}Skipping candidate ({e2})",
+                        fg="yellow",
+                        err=True,
+                    )
+                    saved_path.unlink(missing_ok=True)
+                    continue
+            cache[cand.message_id] = {
+                "haspid": haspid,
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+            }
+            tmp_files[cand.message_id] = saved_path
+
+        save_checked_emails(cache)
+
+        # 4. Filter for this PC
+        matching = [
+            cand
+            for cand in candidates
+            if cache.get(cand.message_id, {}).get("haspid") == state.hasp_id
+        ]
+
+        if not matching:
+            for tmp_path in tmp_files.values():
+                tmp_path.unlink(missing_ok=True)
+            _maybe_send_urgency(state, send_urgency_alert)
+            typer.secho(
+                f"{_ts()}No reply for this dongle yet "
+                f"(hasp_id={state.hasp_id}; checked {len(candidates)} "
+                f"candidate(s) from the shared inbox).",
+                fg="yellow",
+            )
+            return
+
+        winner = matching[0]  # sorted newest-first by find_candidate_emails
+
+        # 5. Promote and verify (defense-in-depth: re-check HASPID from
+        #    filename AND from file contents before applying).
+        src = tmp_files.get(winner.message_id)
+        if src is None:
+            typer.secho(
+                f"{_ts()}Internal error: matching email had no downloaded file.",
+                fg="red",
+                err=True,
+            )
+            raise typer.Exit(1)
+        RECEIVED_L2C_PATH.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(RECEIVED_L2C_PATH))
+        try:
+            verified_haspid = extract_haspid_from_l2c_filename(src.name)
+        except RuntimeError:
+            verified_haspid = extract_haspid_from_l2c_content(RECEIVED_L2C_PATH)
+        if verified_haspid != state.hasp_id:
+            typer.secho(
+                f"{_ts()}HASP ID re-verify failed: file has "
+                f"{verified_haspid}, expected {state.hasp_id}.",
+                fg="red",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        # 6. Apply
+        before = get_license_info()
+        typer.secho(
+            f"{_ts()}Applying .l2c via nis_hasp_update.exe -a ...",
+            fg="bright_blue",
+        )
+        try:
+            after = apply_l2c(RECEIVED_L2C_PATH, before=before)
+        except RuntimeError as e:
+            typer.secho(f"{_ts()}{e}", fg="red", err=True)
+            raise typer.Exit(1) from e
+
+        typer.secho(
+            f"{_ts()}Applied. Expiration {before.expiration_date.isoformat()} "
+            f"-> {after.expiration_date.isoformat()}.",
+            fg="green",
+            bold=True,
+        )
+
+        # 7. Archive and clean up
+        APPLIED_L2C_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            hasp_hex = f"{int(state.hasp_id):08X}"
+        except ValueError:
+            hasp_hex = state.hasp_id
+        archive_path = (
+            APPLIED_L2C_DIR / f"{hasp_hex}_{before.expiration_date.isoformat()}_to_"
+            f"{after.expiration_date.isoformat()}.l2c"
+        )
+        shutil.move(str(RECEIVED_L2C_PATH), str(archive_path))
+        for tmp_path in tmp_files.values():
+            tmp_path.unlink(missing_ok=True)
+
+        # Mark the applied message-id in the cache so we never reprocess it.
+        cache[winner.message_id] = {
+            "haspid": state.hasp_id,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+        save_checked_emails(cache)
+
+        # 8. Delete the renew state — cycle complete.
+        RENEW_STATE_PATH.unlink(missing_ok=True)
+        typer.secho(
+            f"{_ts()}Cycle complete. Archived to {archive_path}.",
+            fg="green",
+            bold=True,
+        )
+
+
+def _apply_update_dry_run(  # type: ignore[no-untyped-def]
+    find_candidate_emails,
+    download_l2c,
+    extract_haspid_from_l2c_filename,
+    extract_haspid_from_l2c_content,
+    load_renew_state,
+) -> None:
+    """Diagnostic run: poll IMAP, download candidates, report HASP IDs.
+
+    Cross-platform (no nis_hasp_update.exe needed, no HASP dongle needed,
+    no production state touched). Useful for verifying the
+    inbox-polling + download pipeline on a Mac before deploying to the
+    Windows machines.
+    """
+    import tempfile
+    from datetime import datetime as _dt
+    from datetime import timedelta, timezone
+
+    state = load_renew_state()
+    if state is None:
+        typer.secho(
+            f"{_ts()}DRY RUN: no renew_state.json on this machine — "
+            "running in pure-diagnostic mode. No HASP-ID match column "
+            "will be shown.",
+            fg=(140, 140, 140),
+        )
+        since = _dt.now(tz=timezone.utc) - timedelta(days=90)
+    else:
+        typer.secho(
+            f"{_ts()}DRY RUN: searching since "
+            f"{state.submitted_at.date().isoformat()}; will mark candidate "
+            f"matching hasp_id={state.hasp_id} (hex "
+            f"{int(state.hasp_id):08X}).",
+            fg=(140, 140, 140),
+        )
+        since = state.submitted_at
+
+    try:
+        candidates = find_candidate_emails(since=since)
+    except RuntimeError as e:
+        typer.secho(f"{_ts()}{e}", fg="red", err=True)
+        raise typer.Exit(1) from e
+
+    if not candidates:
+        typer.secho(f"{_ts()}No candidate emails found.", fg="yellow", bold=True)
+        return
+
+    typer.secho(
+        f"{_ts()}Found {len(candidates)} candidate email(s).",
+        fg="bright_blue",
+        bold=True,
+    )
+
+    expected_id = state.hasp_id if state is not None else None
+    tmp_dir = Path(tempfile.mkdtemp(prefix="cite-apply-dryrun-"))
+    typer.secho(
+        f"{_ts()}Downloading into {tmp_dir} (you can delete this after).",
+        fg=(140, 140, 140),
+    )
+
+    try:
+        for i, cand in enumerate(candidates, 1):
+            typer.echo("")
+            typer.secho(f"  ┌─ #{i}", fg="bright_blue", bold=True)
+            typer.echo(f"  │  From:     {cand.sender}")
+            typer.echo(f"  │  Sent:     {cand.sent_at.isoformat()}")
+            typer.echo(f"  │  Token:    {cand.request_token}")
+            typer.echo(f"  │  URL:      {cand.download_url}")
+            try:
+                saved_path, saved_name = download_l2c(cand.download_url, tmp_dir)
+            except RuntimeError as e:
+                typer.secho(
+                    f"  │  ERROR:    download failed ({e})",
+                    fg="red",
+                )
+                typer.secho("  └─", fg="bright_blue", bold=True)
+                continue
+            size = saved_path.stat().st_size
+            typer.echo(f"  │  File:     {saved_name} ({size:,} bytes)")
+            try:
+                haspid = extract_haspid_from_l2c_filename(saved_name)
+                src = "filename"
+            except RuntimeError:
+                try:
+                    haspid = extract_haspid_from_l2c_content(saved_path)
+                    src = "file content"
+                except RuntimeError as e:
+                    typer.secho(
+                        f"  │  ERROR:    HASP ID could not be parsed ({e})",
+                        fg="red",
+                    )
+                    typer.secho("  └─", fg="bright_blue", bold=True)
+                    continue
+            try:
+                hex_form = f"{int(haspid):08X}"
+            except ValueError:
+                hex_form = "?"
+            typer.echo(f"  │  HASPID:   {haspid} (hex {hex_form}) [parsed from {src}]")
+            if expected_id is not None:
+                if haspid == expected_id:
+                    typer.secho(
+                        "  │  Match:    YES — this would be applied if not --dry-run",
+                        fg="green",
+                        bold=True,
+                    )
+                else:
+                    typer.secho(
+                        "  │  Match:    no (different PC's reply)",
+                        fg=(140, 140, 140),
+                    )
+            typer.secho("  └─", fg="bright_blue", bold=True)
+    finally:
+        # Leave the downloaded files in place so the user can inspect them;
+        # they're in a tmp dir so OS cleanup handles them eventually. The
+        # path was printed above.
+        pass
+
+    typer.echo("")
+    typer.secho(
+        f"{_ts()}DRY RUN complete. Nothing was applied or persisted.",
+        fg="green",
+        bold=True,
+    )
+
+
+def _maybe_send_urgency(state, send_urgency_alert) -> None:  # type: ignore[no-untyped-def]
+    """Send the URGENT alert if we're within URGENCY_DAYS of expiration."""
+    from cite._notify import URGENCY_DAYS
+
+    days_remaining = (state.expiration_date - datetime.now().date()).days
+    if days_remaining > URGENCY_DAYS:
+        return
+    sent = send_urgency_alert(state, days_remaining)
+    if sent:
+        typer.secho(
+            f"{_ts()}URGENT alert email sent (license has "
+            f"{days_remaining} day(s) left).",
+            fg="yellow",
+            err=True,
+        )
+
+
 @app.command("test-alert")
 def test_alert() -> None:
     """Send a test failure-alert email to verify SMTP configuration."""

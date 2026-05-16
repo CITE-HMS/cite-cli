@@ -8,6 +8,7 @@ Available commands:
 
 - [`cite clean`](#cite-clean) — delete files older than N days from one or more directories
 - [`cite renew`](#cite-renew) — auto-submit the NIS-Elements Time-DEMO license renewal form to Nikon
+- [`cite apply-update`](#cite-apply-update) — auto-download and apply Nikon's `.l2c` reply
 - [`cite license`](#cite-license) — quick check of the license expiration date read from the HASP dongle
 - [`cite request-file`](#cite-request-file) — manually generate a fresh `.c2l` request file (also used implicitly by `cite renew`)
 - [Email alerts on failure](#email-alerts-on-failure) — for `cite clean` and `cite renew`, plus `cite test-alert` to verify SMTP setup
@@ -78,6 +79,68 @@ HASP ID: 159918744
 ```
 
 Pass `--raw` to dump the unfiltered ACC features feed (useful when troubleshooting why an expiration date didn't parse).
+
+## `cite apply-update`
+
+Closes the other half of the renewal loop: after `cite renew` has submitted the request to Nikon, this command monitors the shared `citeathms@gmail.com` inbox for Nikon's reply, downloads the resulting `.l2c` file, verifies it matches the local HASP dongle, and applies it silently via `nis_hasp_update.exe -a`. Designed to run daily alongside `cite renew`.
+
+**Key behavior:**
+
+- **No-ops cleanly** on non-renewal days (no `~/.cite/renew_state.json` → exits 0 without opening IMAP).
+- **Multi-PC-aware**: the same inbox feeds every microscope. The command downloads each candidate `.l2c`, parses its HASPID, and applies only the one matching this PC's dongle. Other PCs' replies are recorded in `~/.cite/checked_emails.json` (Message-ID → HASPID cache) so they're never re-downloaded.
+- **URGENT email alert** if no matching reply has arrived AND the dongle's expiration is **≤ 4 days** away. Subject prefixed `[cite-cli] URGENT: ...` so you can build a Gmail filter / push notification on it.
+- **Defense-in-depth**: our HASPID parser checks before applying, and `nis_hasp_update.exe` itself refuses to write a `.l2c` to a non-matching key (`HL key type mismatch` is detected and converted to a clear error).
+
+### Prerequisites
+
+Uses the same Gmail App Password configured for [Email alerts on failure](#email-alerts-on-failure). No new env vars to set — `CITE_ALERT_SMTP_USER` / `CITE_ALERT_SMTP_PASSWORD` work for both outbound SMTP and inbound IMAP.
+
+### Task Scheduler — apply-update
+
+```bat
+/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite apply-update > C:\cite_apply_log.log 2>&1"
+```
+
+Schedule daily at e.g. 01:00. **Stagger across machines** to avoid all PCs hitting Gmail simultaneously — either:
+
+1. **(Recommended)** In the trigger's **Edit** dialog, check **Delay task for up to (random delay)** and set to 1 hour. Task Scheduler picks a different random offset each run.
+2. Or set a different fixed time per PC (01:00, 01:05, 01:10, ...).
+
+### Test it without a dongle (cross-platform) — `--dry-run`
+
+`cite apply-update --dry-run` polls IMAP, downloads every candidate `.l2c` into a tmp dir, parses each HASP ID, and prints a per-candidate report — without invoking `nis_hasp_update.exe`, without writing any state, and without touching the production cache. Works on macOS / Linux / Windows; no HASP dongle required.
+
+Use this to verify your Gmail App Password + the download endpoint before deploying to Windows. The alert env vars must be set first (see [Email alerts on failure](#email-alerts-on-failure)):
+
+```bash
+# macOS / Linux
+export CITE_ALERT_SMTP_USER="citeathms@gmail.com"
+export CITE_ALERT_SMTP_PASSWORD="xxxx xxxx xxxx xxxx"
+export CITE_ALERT_TO="citeathms@gmail.com"
+
+uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite apply-update --dry-run
+```
+
+Output looks like:
+
+```text
+[2026-05-15 ...] DRY RUN: no renew_state.json on this machine — running in pure-diagnostic mode. ...
+[2026-05-15 ...] Found 2 candidate email(s).
+[2026-05-15 ...] Downloading into /var/folders/.../cite-apply-dryrun-XYZ (you can delete this after).
+
+  ┌─ #1
+  │  From:     ahus@lim.cz
+  │  Sent:     2026-05-15T10:30:00+00:00
+  │  Token:    e556d5faf993ece4b7eaaa56fa5be2ad
+  │  URL:      https://nis-e-update.nikon-instruments.jp/dealers/download.php?request=...
+  │  File:     520D66C9.l2c (20,114 bytes)
+  │  HASPID:   1376609993 (hex 520D66C9) [parsed from filename]
+  └─
+
+[2026-05-15 ...] DRY RUN complete. Nothing was applied or persisted.
+```
+
+If you have a `~/.cite/renew_state.json` on the machine, the report additionally marks `Match: YES` next to the candidate whose HASPID matches your dongle's.
 
 ## `cite request-file`
 
