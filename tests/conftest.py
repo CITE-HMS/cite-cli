@@ -101,3 +101,9 @@ def tmp_last_notified_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     p = tmp_path / "last_notified_renewal.json"
     monkeypatch.setattr(_renew, "LAST_NOTIFIED_PATH", p)
     return p
+
+
+@pytest.fixture(autouse=True)
+def _isolate_urgency_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirect LAST_URGENCY_PATH so tests never touch ~/.cite/last_urgency_alert.json."""
+    monkeypatch.setattr(_renew, "LAST_URGENCY_PATH", tmp_path / "last_urgency_alert.json")

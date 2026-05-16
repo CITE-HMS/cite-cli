@@ -64,7 +64,7 @@ class _FakeIMAP:
     next_mailboxes: ClassVar[dict[str, list[bytes]]] = {}
     login_should_fail: ClassVar[bool] = False
 
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(self, host: str, port: int, **_kwargs: object) -> None:
         self.host = host
         self.port = port
         self.logged_out = False
@@ -578,7 +578,7 @@ def test_apply_l2c_success(tmp_path: Path, monkeypatch) -> None:
         return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(_renew.subprocess, "run", fake_run)
-    monkeypatch.setattr(_renew, "get_license_info", lambda: after)
+    monkeypatch.setattr(_renew, "get_license_info", lambda **_: after)
 
     result = apply_l2c(l2c, rus_exe=fake_exe, before=before)
     assert result == after
@@ -617,7 +617,7 @@ def test_apply_l2c_exit_zero_no_advance_raises(tmp_path: Path, monkeypatch) -> N
         return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(_renew.subprocess, "run", fake_run)
-    monkeypatch.setattr(_renew, "get_license_info", lambda: same)
+    monkeypatch.setattr(_renew, "get_license_info", lambda **_: same)
 
     with pytest.raises(RuntimeError, match=r"expiration.*did not advance"):
         apply_l2c(l2c, rus_exe=fake_exe, before=same)
@@ -836,7 +836,7 @@ def test_cli_apply_update_matches_and_applies(
     )
     calls = {"n": 0}
 
-    def fake_info():
+    def fake_info(**_) -> LicenseInfo:
         calls["n"] += 1
         return before if calls["n"] == 1 else after
 
@@ -905,7 +905,7 @@ def test_cli_apply_update_sends_success_email(
     )
     calls = {"n": 0}
 
-    def fake_info():
+    def fake_info(**_) -> LicenseInfo:
         calls["n"] += 1
         return before if calls["n"] == 1 else after
 
@@ -1172,7 +1172,7 @@ def test_cli_apply_update_reuses_staged_file_on_retry(
     )
     calls: dict = {"n": 0}
 
-    def fake_info() -> LicenseInfo:
+    def fake_info(**_) -> LicenseInfo:
         calls["n"] += 1
         return before if calls["n"] == 1 else after
 
@@ -1189,3 +1189,55 @@ def test_cli_apply_update_reuses_staged_file_on_retry(
     assert "Cycle complete" in result.output
     # State file must be gone after a successful apply.
     assert not tmp_state_path.exists()
+
+
+def test_cli_apply_update_apply_l2c_failure_evicts_cache_and_deletes_staged(
+    fake_imap,
+    alert_creds,
+    monkeypatch,
+    tmp_state_path: Path,
+    tmp_checked_emails: Path,
+    tmp_incoming: Path,
+) -> None:
+    """If apply_l2c raises, the winner is evicted from cache and RECEIVED_L2C_PATH
+    is deleted so the next run re-downloads rather than retrying the same bad file."""
+    state = _setup_pending_state(monkeypatch, tmp_state_path, days_until_exp=10)
+
+    fake_imap.next_mailboxes = {
+        "[Gmail]/All Mail": [
+            _make_email(
+                message_id="<ours@fail>",
+                date_hdr="Fri, 15 May 2026 10:00:00 +0000",
+                body=_VALID_BODY,
+            )
+        ]
+    }
+    _install_session_for_token_map(
+        monkeypatch,
+        {"e556d5faf993ece4b7eaaa56fa5be2ad": _fake_response("09882A98")},
+    )
+
+    # subprocess succeeds but get_license_info returns the same date before and
+    # after, triggering apply_l2c's "did not advance" RuntimeError.
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(_renew.subprocess, "run", fake_run)
+
+    same = LicenseInfo(expiration_date=state.expiration_date, hasp_id=state.hasp_id)
+
+    monkeypatch.setattr(_renew, "get_license_info", lambda **_: same)
+
+    fake_exe = tmp_state_path.parent / "nis_hasp_update.exe"
+    fake_exe.write_bytes(b"")
+    monkeypatch.setenv("CITE_RUS_EXE", str(fake_exe))
+
+    result = _invoke_apply_update()
+    assert result.exit_code == 1
+
+    # Winner must be evicted so the next run re-downloads it.
+    cache = load_checked_emails()
+    assert "<ours@fail>" not in cache
+
+    # Staged file must be gone so the next run starts fresh.
+    assert not _renew.RECEIVED_L2C_PATH.exists()

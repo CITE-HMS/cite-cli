@@ -6,6 +6,8 @@ import json
 import os
 import re
 import subprocess
+import sys
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
@@ -34,6 +36,7 @@ APPLIED_L2C_DIR = Path.home() / ".cite" / "applied"
 RECEIVED_L2C_PATH = Path.home() / ".cite" / "received_update.l2c"
 CHECKED_EMAILS_PATH = Path.home() / ".cite" / "checked_emails.json"
 LAST_NOTIFIED_PATH = Path.home() / ".cite" / "last_notified_renewal.json"
+LAST_URGENCY_PATH = Path.home() / ".cite" / "last_urgency_alert.json"
 
 CHECKED_EMAILS_TTL_DAYS = 90
 
@@ -127,14 +130,23 @@ def _parse_exp_date(lic: str) -> date | None:
     return datetime.strptime(f"{month} {day} {year}", "%b %d %Y").date()
 
 
-def get_license_info() -> LicenseInfo:
+def get_license_info(hasp_id: str | None = None) -> LicenseInfo:
     """Return the earliest Nikon-vendor expiration date and HASP key ID via ACC.
 
     Queries the local Sentinel HASP Admin Control Center at
     `http://localhost:1947/_int_/tab_feat.html` (read-only) and parses its
     pseudo-JSON features feed. Filters by Nikon's vendor ID (`40094`) and
-    skips perpetual features. Raises RuntimeError if ACC is unreachable,
-    no matching feature is found, or the response is malformed.
+    skips perpetual features.
+
+    If *hasp_id* (decimal string as reported by ACC) is given, only features
+    for that specific key are considered — used by `apply_l2c` to validate the
+    correct dongle after applying an update, and to handle multi-key setups
+    without false positives.  Without a filter, all Nikon keys are scanned and
+    the entry with the earliest expiry is returned, so attaching a second dongle
+    no longer raises an error.
+
+    Raises RuntimeError if ACC is unreachable, no matching feature is found, or
+    the response is malformed.
     """
     try:
         resp = requests.get(ACC_URL, timeout=5)
@@ -146,30 +158,46 @@ def get_license_info() -> LicenseInfo:
 
     records = _parse_acc_features(resp.content)
 
-    dates: list[date] = []
-    hasp_ids: set[str] = set()
+    entries: list[tuple[date, str]] = []
     for rec in records:
         if rec.get("ven") != NIKON_VENDOR_ID:
             continue
-        exp = _parse_exp_date(rec.get("lic", ""))
-        if exp is None:
-            continue
-        dates.append(exp)
         hid = rec.get("haspid", "").strip()
-        if hid:
-            hasp_ids.add(hid)
+        if hasp_id is not None and hid != hasp_id:
+            continue
+        exp = _parse_exp_date(rec.get("lic", ""))
+        if exp is None or not hid:
+            continue
+        entries.append((exp, hid))
 
-    if not dates:
+    if not entries:
         raise RuntimeError(
-            f"No time-bound features found for Nikon vendor {NIKON_VENDOR_ID} "
-            "via Sentinel ACC — is a Nikon dongle attached?"
+            f"No time-bound features found for Nikon vendor {NIKON_VENDOR_ID}"
+            + (f" on HASP key {hasp_id}" if hasp_id else "")
+            + " via Sentinel ACC — is a Nikon dongle attached?"
         )
-    if len(hasp_ids) != 1:
-        raise RuntimeError(
-            f"Expected exactly one HASP key for Nikon features, "
-            f"got {sorted(hasp_ids)!r}"
-        )
-    return LicenseInfo(expiration_date=min(dates), hasp_id=hasp_ids.pop())
+
+    entries.sort(key=lambda x: x[0])
+    return LicenseInfo(expiration_date=entries[0][0], hasp_id=entries[0][1])
+
+
+def _atomic_replace(src: Path, dst: Path) -> None:
+    """Rename src → dst atomically, retrying on Windows AV-induced PermissionError.
+
+    On Windows, security software can briefly lock a newly-written file, causing
+    os.replace to raise PermissionError. Three attempts with 100 ms gaps covers
+    typical scan delays without meaningfully slowing the happy path.
+    On non-Windows os.replace never raises PermissionError for this reason, so
+    the retry loop is a no-op.
+    """
+    for attempt in range(3):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == 2 or sys.platform != "win32":
+                raise
+            time.sleep(0.1)
 
 
 def load_renew_state(path: Path | None = None) -> RenewState | None:
@@ -205,7 +233,7 @@ def save_renew_state(state: RenewState, path: Path | None = None) -> None:
         "url": state.url,
     }
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    _atomic_replace(tmp, path)
 
 
 def load_last_notified(path: Path | None = None) -> LicenseInfo | None:
@@ -238,7 +266,34 @@ def save_last_notified(info: LicenseInfo, path: Path | None = None) -> None:
         "notified_at": datetime.now(timezone.utc).isoformat(),
     }
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    _atomic_replace(tmp, path)
+
+
+def load_last_urgency(path: Path | None = None) -> datetime | None:
+    """Return the timestamp of the last urgency alert, or None if never sent."""
+    if path is None:
+        path = LAST_URGENCY_PATH
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    try:
+        data = json.loads(raw)
+        return datetime.fromisoformat(data["sent_at"])
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return None
+
+
+def save_last_urgency(sent_at: datetime, path: Path | None = None) -> None:
+    """Atomically persist the urgency-alert timestamp."""
+    if path is None:
+        path = LAST_URGENCY_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps({"sent_at": sent_at.isoformat()}, indent=2), encoding="utf-8"
+    )
+    _atomic_replace(tmp, path)
 
 
 def should_renew(expiration_date: date, days_before: int) -> bool:
@@ -320,14 +375,16 @@ def generate_c2l(output_path: Path, rus_exe: Path | None = None) -> Path:
         )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_path.exists():
-        output_path.unlink()
+    # Write to a tmp path first so the previous .c2l survives if the tool fails.
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    tmp_path.unlink(missing_ok=True)
 
     try:
         result = subprocess.run(
-            [str(rus_exe), "-r", str(output_path)],
+            [str(rus_exe), "-r", str(tmp_path)],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=60,
         )
     except subprocess.TimeoutExpired as e:
@@ -341,13 +398,14 @@ def generate_c2l(output_path: Path, rus_exe: Path | None = None) -> Path:
             f"{(result.stderr or result.stdout or '(no output)').strip()}"
         )
 
-    if not output_path.is_file():
+    if not tmp_path.is_file():
         raise RuntimeError(
             f"{rus_exe.name} reported success but did not create {output_path}. "
             "Check that the parent directory exists and is writable, and that "
             "a HASP dongle is attached."
         )
 
+    _atomic_replace(tmp_path, output_path)
     return output_path
 
 
@@ -441,6 +499,11 @@ def _looks_like_l2c_payload(resp: requests.Response) -> bool:
         return False
     if head.lstrip().startswith(b"<?xml") and b"HASPUpdate" in resp.content[:2048]:
         return True
+    # Reject well-known binary formats that are clearly not .l2c XML
+    # (PDF, ZIP, PNG, JPEG, GIF, BMP) before accepting the fallback.
+    _NON_L2C_MAGIC = (b"%PDF", b"PK\x03\x04", b"\x89PNG", b"GIF8", b"\xff\xd8\xff", b"BM")
+    if any(head[: len(m)] == m for m in _NON_L2C_MAGIC):
+        return False
     # Final fallback: reasonable-sized binary body with no HTML markers.
     return len(resp.content) > 1024 and not content_type.startswith("text/")
 
@@ -563,7 +626,7 @@ def save_checked_emails(
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(pruned, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    _atomic_replace(tmp, path)
 
 
 def apply_l2c(
@@ -600,6 +663,7 @@ def apply_l2c(
             [str(rus_exe), RUS_APPLY_FLAG, str(l2c_path)],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=120,
         )
     except subprocess.TimeoutExpired as e:
@@ -632,7 +696,9 @@ def apply_l2c(
             f"{l2c_path.name}: {combined.strip() or '(no output)'}"
         )
 
-    after = get_license_info()
+    # Filter to the specific key so multi-feature dongles don't produce false
+    # "did not advance" failures when a non-minimum feature was renewed.
+    after = get_license_info(hasp_id=before.hasp_id)
     if after.expiration_date <= before.expiration_date:
         raise RuntimeError(
             f"{rus_exe.name} reported success but the dongle's expiration "
@@ -670,4 +736,24 @@ def submit_license_form(
             f"Nikon returned an empty response body from {url}. "
             "The submission may not have been processed."
         )
+    # Nikon's endpoint can return HTTP 200 with an HTML error page on bad
+    # input (invalid email, malformed .c2l, etc.). Success also returns HTML,
+    # so only reject when we see error-page title or server-error markers.
+    _body = resp.content[:2048].lower()
+    if b"<html" in _body or b"<!doctype" in _body:
+        _error_titles = (
+            b"<title>error",
+            b"<title>400",
+            b"<title>500",
+            b"<title>bad request",
+            b"<title>not found",
+        )
+        _error_body = (b"400 bad request", b"500 internal server error")
+        if any(t in _body for t in _error_titles + _error_body):
+            preview = resp.content[:300].decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"Nikon returned an HTML error page (HTTP {resp.status_code}); "
+                "the submission was likely not processed. Check your email "
+                f"address, .c2l file, and note.\nResponse preview: {preview!r}"
+            )
     return resp
