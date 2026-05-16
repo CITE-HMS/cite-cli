@@ -36,7 +36,7 @@ Optional: include in Task Scheduler arguments`--refresh` on the `uv tool run` li
 
 Every `cite` command automatically writes its full output to a rotating log file at `%USERPROFILE%\.cite\logs\cite.log` (1 MB × 5 backups). You never need to redirect output yourself for day-to-day viewing — run `cite log` to open that folder.
 
-The Task Scheduler arguments below still include a small `>> bootstrap.log 2>&1` redirect. This covers the rare case where `uvx` itself fails before Python starts (e.g. GitHub unreachable, dependency conflict) — no Python code runs in that case, so the internal logger never gets a chance. The bootstrap file lives in the same `.cite\logs\` folder.
+The Task Scheduler arguments below still include a small `> bootstrap.log 2>&1` redirect. This covers the rare case where `uvx` itself fails before Python starts (e.g. GitHub unreachable, dependency conflict) — no Python code runs in that case, so the internal logger never gets a chance. The bootstrap file lives in the same `.cite\logs\` folder.
 
 ---
 
@@ -81,7 +81,7 @@ Deletes files older than N days from one or more directories. When no directory 
 **Task Scheduler arguments** (runs daily):
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite clean -d 25 -f >> %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
+/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite clean -d 25 -f > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 - `-d 25` — delete files older than 25 days (adjust as needed).
@@ -90,7 +90,7 @@ Deletes files older than N days from one or more directories. When no directory 
 To clean a specific directory instead of the defaults, add the path as the first argument:
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite clean D:\MyData -d 30 -f >> %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
+/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite clean D:\MyData -d 30 -f > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 ---
@@ -119,7 +119,7 @@ Each phase has its own failure-alert wrapper — a failure in phase 1 does **not
 **Task Scheduler arguments** (runs daily):
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite renew --email you@example.com --full-name "Your Name" --url nikon >> %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
+/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite renew --email you@example.com --full-name "Your Name" --url nikon > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 Schedule at e.g. 01:00. **Stagger start times across machines** to avoid all PCs hitting Gmail simultaneously:
@@ -173,7 +173,7 @@ When useful:
 If you do want a separate, IMAP-only Task Scheduler entry (e.g. to poll more frequently than `cite renew` runs):
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite apply-update >> %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
+/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite apply-update > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 Stagger across machines the same way as `cite renew` (random delay in Task Scheduler).
