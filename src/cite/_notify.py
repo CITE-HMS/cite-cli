@@ -26,7 +26,7 @@ from email.message import EmailMessage
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from cite._renew import RenewState
+    from cite._renew import LicenseInfo, RenewState
 
 URGENCY_DAYS = 4
 
@@ -139,6 +139,51 @@ def send_urgency_alert(state: RenewState, days_remaining: int) -> bool:
         f"     {hostname} via HASP Update (or `cite apply-update`).\n"
         f"  3. If no reply has arrived, contact Nikon support and quote\n"
         f"     the HASP ID above.\n"
+    )
+
+    try:
+        with smtplib.SMTP(host, port, timeout=30) as s:
+            s.starttls()
+            s.login(user, password)
+            s.send_message(msg)
+        return True
+    except Exception:
+        return False
+
+
+def send_apply_success_email(before: LicenseInfo, after: LicenseInfo) -> bool:
+    """Send a confirmation email after apply-update successfully applies a .l2c.
+
+    Returns True if delivered, False if not configured or SMTP failed. Never raises.
+    """
+    if not _is_configured():
+        return False
+
+    user = os.environ["CITE_ALERT_SMTP_USER"]
+    password = os.environ["CITE_ALERT_SMTP_PASSWORD"]
+    to_addrs = os.environ["CITE_ALERT_TO"]
+    host = os.environ.get("CITE_ALERT_SMTP_HOST", "smtp.gmail.com")
+    port = int(os.environ.get("CITE_ALERT_SMTP_PORT", "587"))
+    from_addr = os.environ.get("CITE_ALERT_FROM", user)
+
+    hostname = socket.gethostname()
+    hasp_hex = _hasp_id_hex(before.hasp_id)
+    days_gained = (after.expiration_date - before.expiration_date).days
+    days_left = (after.expiration_date - datetime.now(tz=timezone.utc).date()).days
+
+    msg = EmailMessage()
+    msg["Subject"] = f"[cite-cli] NIS-Elements license renewed on {hostname}"
+    msg["From"] = from_addr
+    msg["To"] = to_addrs
+    msg.set_content(
+        f"NIS-Elements license successfully renewed.\n"
+        f"\n"
+        f"Host:        {hostname}\n"
+        f"HASP ID:     {hasp_hex} (decimal {before.hasp_id})\n"
+        f"Old expiry:  {before.expiration_date.isoformat()}\n"
+        f"New expiry:  {after.expiration_date.isoformat()}"
+        f" ({days_left} days from now)\n"
+        f"Days gained: {days_gained}\n"
     )
 
     try:

@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 import requests
 
-from cite import _renew
+from cite import _log, _renew
+from cite._log import close_logging
 from cite._renew import URL_ALIASES, RenewTarget
 from cite.mock_renew.server import _Handler
 
@@ -20,6 +21,21 @@ _ALERT_ENV_VARS = (
     "CITE_ALERT_SMTP_PORT",
     "CITE_ALERT_FROM",
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_logging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirect cite logging to tmp_path and close the handler after each test.
+
+    This prevents ResourceWarning from unclosed file handles when CLI commands
+    trigger init_logging() during tests.
+    """
+    logs_dir = tmp_path / "logs"
+    cite_log = logs_dir / "cite.log"
+    monkeypatch.setattr(_log, "LOGS_DIR", logs_dir)
+    monkeypatch.setattr(_log, "CITE_LOG", cite_log)
+    yield
+    close_logging()
 
 
 @pytest.fixture(autouse=True)

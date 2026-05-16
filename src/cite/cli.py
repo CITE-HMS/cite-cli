@@ -87,6 +87,9 @@ def _main(
 
     v{version}
     """
+    from cite._log import init_logging
+
+    init_logging()
 
 
 _main.__doc__ = typer.style(
@@ -104,6 +107,21 @@ def update() -> None:
         ["pip", "install", "--upgrade", "--force-reinstall", url],
         stderr=subprocess.DEVNULL,
     )
+
+
+@app.command("log")
+def show_log() -> None:
+    """Open the ~/.cite/logs/ folder in the system file manager."""
+    from cite._log import CITE_LOG, LOGS_DIR, open_logs_dir
+
+    typer.secho(f"{_ts()}Opening {LOGS_DIR} ...", fg="bright_blue")
+    if CITE_LOG.exists():
+        size_kb = CITE_LOG.stat().st_size // 1024
+        typer.secho(
+            f"  cite.log: {size_kb} KB",
+            fg=(160, 160, 160),
+        )
+    open_logs_dir()
 
 
 @app.command()
@@ -646,7 +664,7 @@ def apply_update(
     import shutil
 
     from cite._email import find_candidate_emails
-    from cite._notify import send_urgency_alert
+    from cite._notify import send_apply_success_email, send_urgency_alert
     from cite._renew import (
         APPLIED_L2C_DIR,
         INCOMING_DIR,
@@ -806,6 +824,9 @@ def apply_update(
             fg="green",
             bold=True,
         )
+
+        if send_apply_success_email(before, after):
+            typer.secho(f"{_ts()}Renewal confirmation email sent.", fg="green")
 
         # 7. Archive and clean up
         APPLIED_L2C_DIR.mkdir(parents=True, exist_ok=True)
