@@ -26,6 +26,10 @@ If the path to `uv.exe` contains spaces, wrap it in an extra pair of double quot
 /c ""C:\Users\My User\.local\bin\uv.exe" tool run ..."
 ```
 
+### Why `--refresh`?
+
+Optional: include in Task Scheduler arguments`--refresh` on the `uv tool run` line. This tells `uv` to re-fetch the latest commit from GitHub on every invocation, instead of using its cached build. Tradeoff: ~one extra small fetch per machine per day (well under a second on a normal network); benefit: any bug fix or feature you push gets picked up automatically on every machine the next time the task fires — no manual cache invalidation, no logging into each PC. For a multi-machine deployment that's the right default. If you ever want to pin to a specific tested version, replace `--refresh` with `git+https://github.com/CITE-HMS/cite-cli@v1.2.3` (or a commit SHA).
+
 ---
 
 ### Logging
