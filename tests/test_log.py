@@ -86,6 +86,75 @@ def test_init_logging_stdout_written_to_file() -> None:
     assert "sentinel-line" in content
 
 
+def test_init_logging_captures_typer_secho_output() -> None:
+    """Regression test for the Windows bug where click's Windows-console
+    fast path bypassed our Tee, leaving cite.log empty.
+
+    On macOS/Linux this passes trivially; on Windows it would fail
+    before the _patch_click_for_tee fix because click writes directly
+    to the Windows Console handle instead of through sys.stdout.
+    """
+    import typer
+
+    init_logging()
+    typer.secho("typer-secho-marker", fg="green")
+    typer.secho("typer-stderr-marker", fg="red", err=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    content = _log.CITE_LOG.read_text(encoding="utf-8")
+    assert "typer-secho-marker" in content
+    assert "typer-stderr-marker" in content
+
+
+def test_init_logging_simulated_windows_console_path(monkeypatch) -> None:
+    """Simulate the Windows-only failure mode by forcing click's
+    Windows-console fast path to be active on this platform.
+
+    Without `_patch_click_for_tee`'s neutralisation, click would write
+    directly to the console-stream returned by `_get_windows_console_stream`,
+    bypassing our Tee. With the fix, that selector returns None even on
+    Windows (and during this simulated run), so click falls through to
+    wrap sys.stdout (= our Tee) instead.
+
+    This test would fail on Windows pre-fix; the simulation lets us
+    catch a regression on any platform.
+    """
+    import io
+
+    import typer
+    from click import _compat
+
+    # Build a sentinel "Windows console stream" that DOES NOT go through
+    # sys.stdout. If click ever used this stream instead of going through
+    # sys.stdout, our Tee would never see the writes and the assertion
+    # below would catch it.
+    bypass_buffer = io.StringIO()
+
+    # Inject a Windows-console-stream selector BEFORE init_logging runs.
+    # If the regression returns, click will use this bypass_buffer for
+    # output and our log assertion below fails.
+    monkeypatch.setattr(
+        _compat,
+        "_get_windows_console_stream",
+        lambda *_a, **_kw: bypass_buffer,
+    )
+
+    init_logging()  # this should reinstall our None-returning override
+
+    typer.secho("post-patch-marker", fg="green")
+    sys.stdout.flush()
+
+    # Our patch must have neutralised the injected bypass on every
+    # platform — output should reach the log AND NOT leak to bypass_buffer.
+    assert bypass_buffer.getvalue() == "", (
+        "Click bypassed sys.stdout via the Windows-console stream — "
+        "_patch_click_for_tee fix is not effective"
+    )
+    content = _log.CITE_LOG.read_text(encoding="utf-8")
+    assert "post-patch-marker" in content
+
+
 # ---------------------------------------------------------------------------
 # cite log command
 # ---------------------------------------------------------------------------

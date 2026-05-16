@@ -140,12 +140,15 @@ def _patch_click_for_tee() -> None:
                         except Exception:
                             pass
 
-        if sys.platform == "win32":
+        # Override unconditionally. On Windows this neutralises the direct
+        # Windows-Console-Stream fast path that bypasses sys.stdout. On
+        # non-Windows the function already returns None natively, so this
+        # is a defensive no-op — but having it run on every platform makes
+        # the regression test cross-platform.
+        def _no_windows_console(*_args: Any, **_kwargs: Any) -> None:
+            return None
 
-            def _no_windows_console(*_args: Any, **_kwargs: Any) -> None:
-                return None
-
-            _click_compat._get_windows_console_stream = _no_windows_console
+        _click_compat._get_windows_console_stream = _no_windows_console
     except Exception:
         # Logging must never crash the command. If click's internals
         # change shape, we lose the captured-output feature but
