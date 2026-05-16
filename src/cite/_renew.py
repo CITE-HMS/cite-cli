@@ -499,6 +499,11 @@ def _looks_like_l2c_payload(resp: requests.Response) -> bool:
         return False
     if head.lstrip().startswith(b"<?xml") and b"HASPUpdate" in resp.content[:2048]:
         return True
+    # Reject well-known binary formats that are clearly not .l2c XML
+    # (PDF, ZIP, PNG, JPEG, GIF, BMP) before accepting the fallback.
+    _NON_L2C_MAGIC = (b"%PDF", b"PK\x03\x04", b"\x89PNG", b"GIF8", b"\xff\xd8\xff", b"BM")
+    if any(head[: len(m)] == m for m in _NON_L2C_MAGIC):
+        return False
     # Final fallback: reasonable-sized binary body with no HTML markers.
     return len(resp.content) > 1024 and not content_type.startswith("text/")
 
@@ -731,4 +736,24 @@ def submit_license_form(
             f"Nikon returned an empty response body from {url}. "
             "The submission may not have been processed."
         )
+    # Nikon's endpoint can return HTTP 200 with an HTML error page on bad
+    # input (invalid email, malformed .c2l, etc.). Success also returns HTML,
+    # so only reject when we see error-page title or server-error markers.
+    _body = resp.content[:2048].lower()
+    if b"<html" in _body or b"<!doctype" in _body:
+        _error_titles = (
+            b"<title>error",
+            b"<title>400",
+            b"<title>500",
+            b"<title>bad request",
+            b"<title>not found",
+        )
+        _error_body = (b"400 bad request", b"500 internal server error")
+        if any(t in _body for t in _error_titles + _error_body):
+            preview = resp.content[:300].decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"Nikon returned an HTML error page (HTTP {resp.status_code}); "
+                "the submission was likely not processed. Check your email "
+                f"address, .c2l file, and note.\nResponse preview: {preview!r}"
+            )
     return resp

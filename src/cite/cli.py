@@ -462,7 +462,7 @@ def renew(
     # do NOT block the submit phase.
     if not no_apply:
         try:
-            apply_update(dry_run=False)
+            apply_update(dry_run=dry_run)
         except typer.Exit as e:
             if e.exit_code:
                 typer.secho(
@@ -808,6 +808,12 @@ def apply_update(
 
         winner = matching[0]  # sorted newest-first by find_candidate_emails
 
+        # Delete non-winner downloads now — they are never needed again and
+        # would otherwise linger in INCOMING_DIR if the process exits early.
+        for _mid, _tmp in tmp_files.items():
+            if _mid != winner.message_id:
+                _tmp.unlink(missing_ok=True)
+
         # 5. Promote and verify (defense-in-depth: re-check HASPID from
         #    filename AND from file contents before applying).
         src = tmp_files.get(winner.message_id)
@@ -851,7 +857,7 @@ def apply_update(
             raise typer.Exit(1)
 
         # 6. Apply
-        before = get_license_info()
+        before = get_license_info(hasp_id=state.hasp_id)
         typer.secho(
             f"{_ts()}Applying .l2c via nis_hasp_update.exe -a ...",
             fg="bright_blue",
@@ -860,6 +866,11 @@ def apply_update(
             after = apply_l2c(RECEIVED_L2C_PATH, before=before)
         except RuntimeError as e:
             typer.secho(f"{_ts()}{e}", fg="red", err=True)
+            # Evict the winner from cache and delete the staged file so the
+            # next run re-downloads rather than retrying the same bad file.
+            cache.pop(winner.message_id, None)
+            save_checked_emails(cache)
+            RECEIVED_L2C_PATH.unlink(missing_ok=True)
             raise typer.Exit(1) from e
 
         typer.secho(
@@ -1038,7 +1049,7 @@ def _clear_stale_renew_state_if_renewed() -> None:
     if state is None:
         return
     try:
-        current = get_license_info()
+        current = get_license_info(hasp_id=state.hasp_id)
     except RuntimeError:
         return
     if current.expiration_date > state.expiration_date:

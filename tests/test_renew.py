@@ -206,6 +206,36 @@ def test_submit_license_form_empty_body_raises(tmp_path: Path, monkeypatch) -> N
         )
 
 
+def test_submit_license_form_raises_on_html_error_page(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """HTTP 200 with an HTML error-page title must raise, not silently save state."""
+    import requests as _req
+
+    c2l = tmp_path / "req.c2l"
+    c2l.write_bytes(b"dummy c2l")
+
+    class _ErrorResp:
+        status_code = 200
+        content = (
+            b"<!DOCTYPE html><html><head><title>Error</title></head>"
+            b"<body>400 Bad Request: invalid email address</body></html>"
+        )
+
+        def raise_for_status(self) -> None:
+            pass
+
+    monkeypatch.setattr(_req, "post", lambda *a, **kw: _ErrorResp())
+    with pytest.raises(RuntimeError, match="HTML error page"):
+        submit_license_form(
+            url="http://127.0.0.1:1/",
+            email="x@y.z",
+            full_name="x",
+            c2l_file=c2l,
+            note="",
+        )
+
+
 # --- CLI tests ---
 
 
@@ -695,7 +725,7 @@ def test_generate_c2l_overwrites_stale_file(tmp_path: Path, monkeypatch) -> None
 
 
 def _info_factory(exp: date, hasp_id: str = "4B92F5FA"):
-    return lambda: LicenseInfo(expiration_date=exp, hasp_id=hasp_id)
+    return lambda **_: LicenseInfo(expiration_date=exp, hasp_id=hasp_id)
 
 
 def _invoke_renew_no_expires(c2l_file: Path, email: str = "dedup@example.com"):
