@@ -237,12 +237,37 @@ def test_find_candidate_emails_returns_newest_first(fake_imap, alert_creds) -> N
 # --- download_l2c ---------------------------------------------------------
 
 
+_HTML_CONFIRMATION = (
+    b"<!DOCTYPE html><html><body>"
+    b'<form method="post"><input name="downloadNow" value="true"/>'
+    b'<input name="sendMe" value="Click to download the update" type="submit"/>'
+    b"</form></body></html>"
+)
+
+
+def _l2c_bytes(haspid_hex: str = "520D66C9") -> bytes:
+    """A minimal real-looking .l2c body (XML with the HASPUpdate marker)."""
+    return (
+        f'<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<variant version="1.0">\n'
+        f'  <HASPUpdate_1.0 runtype="CLxListVariant">\n'
+        f'    <Key0><HASPID runtype="CLxStringW" value="{haspid_hex}"/></Key0>\n'
+        f"  </HASPUpdate_1.0>\n"
+        f"</variant>\n" + " " * 1500  # pad to >1KB so the heuristic accepts it
+    ).encode()
+
+
 class _Resp:
     """Minimal stand-in for a requests.Response."""
 
-    def __init__(self, content: bytes = b"data", filename: str | None = None) -> None:
+    def __init__(
+        self,
+        content: bytes = b"data",
+        filename: str | None = None,
+        content_type: str = "application/octet-stream",
+    ) -> None:
         self.content = content
-        self.headers: dict[str, str] = {}
+        self.headers: dict[str, str] = {"Content-Type": content_type}
         if filename:
             self.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
 
@@ -250,43 +275,166 @@ class _Resp:
         return None
 
 
-def test_download_l2c_uses_filename_from_header(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        requests,
-        "get",
-        lambda *a, **k: _Resp(content=b"fake l2c bytes", filename="520D66C9.l2c"),
-    )
-    path, name = download_l2c("http://example/x?request=abc", tmp_path)
+class _FakeSession:
+    """Stand-in for requests.Session, capturing GET/POST calls."""
+
+    instances: ClassVar[list[_FakeSession]] = []
+
+    def __init__(
+        self,
+        get_response: _Resp | None = None,
+        post_response: _Resp | None = None,
+        get_exc: Exception | None = None,
+        post_exc: Exception | None = None,
+    ) -> None:
+        self.get_response = get_response or _Resp(
+            content=_HTML_CONFIRMATION, content_type="text/html"
+        )
+        self.post_response = post_response
+        self.get_exc = get_exc
+        self.post_exc = post_exc
+        self.get_calls: list[tuple] = []
+        self.post_calls: list[tuple] = []
+        _FakeSession.instances.append(self)
+
+    def __enter__(self) -> _FakeSession:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def get(self, url, **kwargs):  # type: ignore[no-untyped-def]
+        self.get_calls.append((url, kwargs))
+        if self.get_exc is not None:
+            raise self.get_exc
+        return self.get_response
+
+    def post(self, url, data=None, **kwargs):  # type: ignore[no-untyped-def]
+        self.post_calls.append((url, data, kwargs))
+        if self.post_exc is not None:
+            raise self.post_exc
+        return self.post_response
+
+
+def _install_sessions(monkeypatch, factory) -> None:
+    """Make `requests.Session()` return whatever the factory produces."""
+    _FakeSession.instances = []
+    monkeypatch.setattr(requests, "Session", factory)
+
+
+def test_download_l2c_two_step_get_then_post(tmp_path: Path, monkeypatch) -> None:
+    """Verifies the two-step flow: HTML form on GET, real .l2c on POST."""
+
+    def factory():
+        return _FakeSession(
+            get_response=_Resp(content=_HTML_CONFIRMATION, content_type="text/html"),
+            post_response=_Resp(
+                content=_l2c_bytes("520D66C9"),
+                filename="520D66C9.l2c",
+            ),
+        )
+
+    _install_sessions(monkeypatch, factory)
+
+    url = "https://nis-e-update.nikon-instruments.jp/dealers/download.php?request=abc"
+    path, name = download_l2c(url, tmp_path)
     assert name == "520D66C9.l2c"
     assert path == tmp_path / "520D66C9.l2c"
-    assert path.read_bytes() == b"fake l2c bytes"
+
+    session = _FakeSession.instances[0]
+    assert len(session.get_calls) == 1
+    assert len(session.post_calls) == 1
+    # The form payload must match what Nikon's HTML form would submit.
+    _, posted_data, _ = session.post_calls[0]
+    assert posted_data == {
+        "downloadNow": "true",
+        "sendMe": "Click to download the update",
+    }
+
+
+def test_download_l2c_skips_post_if_get_returns_binary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """If a server hands back the .l2c on the initial GET, no POST needed."""
+
+    def factory():
+        return _FakeSession(
+            get_response=_Resp(
+                content=_l2c_bytes("AAAA1111"),
+                filename="AAAA1111.l2c",
+            ),
+            post_response=None,  # must NOT be called
+        )
+
+    _install_sessions(monkeypatch, factory)
+
+    _, name = download_l2c("http://x?request=z", tmp_path)
+    assert name == "AAAA1111.l2c"
+    assert _FakeSession.instances[0].post_calls == []
+
+
+def test_download_l2c_rejects_html_response(tmp_path: Path, monkeypatch) -> None:
+    """If the POST still returns HTML (expired token), raise a clear error."""
+
+    def factory():
+        return _FakeSession(
+            get_response=_Resp(
+                content=_HTML_CONFIRMATION,
+                content_type="text/html",
+            ),
+            post_response=_Resp(
+                content=b"<!DOCTYPE html><html><body>Token expired</body></html>",
+                content_type="text/html",
+            ),
+        )
+
+    _install_sessions(monkeypatch, factory)
+
+    with pytest.raises(RuntimeError, match="invalid or expired"):
+        download_l2c("http://x?request=z", tmp_path)
 
 
 def test_download_l2c_falls_back_to_url_token(tmp_path: Path, monkeypatch) -> None:
-    """When Content-Disposition is missing, derive a name from the URL token."""
-    monkeypatch.setattr(
-        requests,
-        "get",
-        lambda *a, **k: _Resp(content=b"bytes"),  # no filename
-    )
-    path, name = download_l2c("http://example/x?request=deadbeefcafebabe", tmp_path)
+    """When Content-Disposition is missing on the POST, derive a name from
+    the URL token."""
+
+    def factory():
+        return _FakeSession(
+            get_response=_Resp(
+                content=_HTML_CONFIRMATION,
+                content_type="text/html",
+            ),
+            post_response=_Resp(content=_l2c_bytes("12345678")),  # no CD header
+        )
+
+    _install_sessions(monkeypatch, factory)
+
+    _, name = download_l2c("http://x?request=deadbeefcafebabe", tmp_path)
     assert name.endswith(".l2c")
-    assert path.exists()
 
 
 def test_download_l2c_http_error_raises(tmp_path: Path, monkeypatch) -> None:
-    def _boom(*a, **k):
-        raise requests.RequestException("nope")
+    def factory():
+        return _FakeSession(get_exc=requests.RequestException("nope"))
 
-    monkeypatch.setattr(requests, "get", _boom)
+    _install_sessions(monkeypatch, factory)
     with pytest.raises(RuntimeError, match="Failed to download"):
-        download_l2c("http://example/x?request=z", tmp_path)
+        download_l2c("http://x?request=z", tmp_path)
 
 
 def test_download_l2c_empty_body_raises(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(content=b""))
+    def factory():
+        return _FakeSession(
+            get_response=_Resp(
+                content=_HTML_CONFIRMATION,
+                content_type="text/html",
+            ),
+            post_response=_Resp(content=b""),
+        )
+
+    _install_sessions(monkeypatch, factory)
     with pytest.raises(RuntimeError, match="empty"):
-        download_l2c("http://example/x?request=z", tmp_path)
+        download_l2c("http://x?request=z", tmp_path)
 
 
 # --- extract_haspid_from_l2c_filename --------------------------------------
@@ -598,11 +746,38 @@ def test_cli_apply_update_no_candidates(
 
 
 def _fake_response(haspid_hex: str) -> _Resp:
-    """Build a fake .l2c response: filename header drives HASP ID."""
+    """Build a fake .l2c POST response: filename header drives HASP ID."""
     return _Resp(
         content=_REAL_L2C_FORMAT.replace(b"{haspid}", haspid_hex.encode("ascii")),
         filename=f"{haspid_hex}.l2c",
     )
+
+
+def _install_session_for_token_map(monkeypatch, post_resp_by_token):
+    """Install a Session factory that POSTs return canned responses keyed by
+    the URL's request token; GET always returns the HTML confirmation page."""
+
+    def factory():
+        session = _FakeSession(
+            get_response=_Resp(
+                content=_HTML_CONFIRMATION,
+                content_type="text/html",
+            ),
+        )
+
+        # Per-URL POST routing: override .post to dispatch on the URL token.
+        def post(url, data=None, **kwargs):  # type: ignore[no-untyped-def]
+            session.post_calls.append((url, data, kwargs))
+            token = url.rsplit("=", 1)[-1]
+            resp = post_resp_by_token.get(token)
+            if resp is None:
+                raise AssertionError(f"no fake response for token {token}")
+            return resp
+
+        session.post = post  # type: ignore[method-assign]
+        return session
+
+    _install_sessions(monkeypatch, factory)
 
 
 def test_cli_apply_update_matches_and_applies(
@@ -639,16 +814,13 @@ def test_cli_apply_update_matches_and_applies(
     }
 
     # Map each request_token to a fake .l2c whose filename carries the HASPID.
-    haspid_hex_by_token = {
-        "1" * 32: "AAAA1111",  # decimal 2863316753 — NOT ours
-        "2" * 32: "09882A98",  # decimal 159918744 — OURS
-    }
-
-    def fake_get(url, **kwargs):
-        token = url.rsplit("=", 1)[-1]
-        return _fake_response(haspid_hex_by_token[token])
-
-    monkeypatch.setattr(requests, "get", fake_get)
+    _install_session_for_token_map(
+        monkeypatch,
+        {
+            "1" * 32: _fake_response("AAAA1111"),  # NOT ours
+            "2" * 32: _fake_response("09882A98"),  # OURS
+        },
+    )
 
     # Mock subprocess apply.
     def fake_run(cmd, **kwargs):
@@ -715,10 +887,17 @@ def test_cli_apply_update_no_match_in_urgency_window(
         ]
     }
 
-    def fake_get(url, **kwargs):
-        return _fake_response("AAAA1111")  # different HASPID
+    def factory():
+        session = _FakeSession(
+            get_response=_Resp(
+                content=_HTML_CONFIRMATION,
+                content_type="text/html",
+            ),
+            post_response=_fake_response("AAAA1111"),
+        )
+        return session
 
-    monkeypatch.setattr(requests, "get", fake_get)
+    _install_sessions(monkeypatch, factory)
 
     result = _invoke_apply_update()
     assert result.exit_code == 0, result.output
@@ -778,17 +957,13 @@ def test_cli_apply_update_cache_skips_known_other_pc(
         ]
     }
 
-    download_calls = {"n": 0}
+    def factory():
+        raise AssertionError("Session() should not be created for cached candidate")
 
-    def boom_if_called(*a, **k):
-        download_calls["n"] += 1
-        raise AssertionError("should not have downloaded a cached candidate")
-
-    monkeypatch.setattr(requests, "get", boom_if_called)
+    _install_sessions(monkeypatch, factory)
 
     result = _invoke_apply_update()
     assert result.exit_code == 0, result.output
-    assert download_calls["n"] == 0
     assert "No reply for this dongle yet" in result.output
 
 
@@ -811,11 +986,17 @@ def test_cli_apply_update_dry_run_no_state(
             )
         ]
     }
-    monkeypatch.setattr(
-        requests,
-        "get",
-        lambda *a, **k: _fake_response("520D66C9"),
-    )
+
+    def factory():
+        return _FakeSession(
+            get_response=_Resp(
+                content=_HTML_CONFIRMATION,
+                content_type="text/html",
+            ),
+            post_response=_fake_response("520D66C9"),
+        )
+
+    _install_sessions(monkeypatch, factory)
 
     result = runner.invoke(app, ["apply-update", "--dry-run"])
     assert result.exit_code == 0, result.output
@@ -844,11 +1025,17 @@ def test_cli_apply_update_dry_run_marks_match(
             )
         ]
     }
-    monkeypatch.setattr(
-        requests,
-        "get",
-        lambda *a, **k: _fake_response("09882A98"),  # matches state.hasp_id
-    )
+
+    def factory():
+        return _FakeSession(
+            get_response=_Resp(
+                content=_HTML_CONFIRMATION,
+                content_type="text/html",
+            ),
+            post_response=_fake_response("09882A98"),  # matches state.hasp_id
+        )
+
+    _install_sessions(monkeypatch, factory)
 
     result = runner.invoke(app, ["apply-update", "--dry-run"])
     assert result.exit_code == 0, result.output

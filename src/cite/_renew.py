@@ -286,24 +286,58 @@ _L2C_FILENAME_RE = re.compile(r"^([0-9A-Fa-f]{8})\.l2c$", re.IGNORECASE)
 
 
 def download_l2c(url: str, output_dir: Path, timeout: float = 30.0) -> tuple[Path, str]:
-    """GET the .l2c bytes from `url` and write into `output_dir`.
+    """Download the .l2c bytes from Nikon's dealer endpoint.
+
+    Nikon's flow is two-step: a GET returns an HTML confirmation page
+    with a form (button labelled "Click to download the update"), and a
+    POST with `downloadNow=true&sendMe=Click to download the update` to
+    the same URL returns the actual .l2c bytes. We replicate both steps
+    via a Session so any session cookies set on the GET carry through.
 
     Returns (saved_path, original_filename). The original filename is
-    extracted from the response's Content-Disposition header (Nikon
-    serves files named `<HASPID_hex>.l2c`); falls back to the URL's
-    request token if the header is missing. The saved path uses the
-    original filename, so a subsequent `extract_haspid_from_l2c_filename`
-    can identify the dongle without parsing file contents.
+    extracted from the POST response's Content-Disposition header
+    (Nikon serves `<HASPID_hex>.l2c`); falls back to the URL's request
+    token if missing.
 
-    Raises RuntimeError on HTTP failure or empty body.
+    Raises RuntimeError on HTTP failure, empty body, or if Nikon serves
+    HTML instead of the binary .l2c (which usually means the request
+    token is invalid or expired).
     """
     try:
-        resp = requests.get(url, timeout=timeout)
-        resp.raise_for_status()
+        with requests.Session() as session:
+            # Step 1: GET the confirmation page (also primes any session cookies).
+            initial = session.get(url, timeout=timeout)
+            initial.raise_for_status()
+            # If the GET unexpectedly returned the binary file directly (some
+            # endpoint versions might), use it. Otherwise complete the
+            # two-step download by POSTing the form.
+            if _looks_like_l2c_payload(initial):
+                resp = initial
+            else:
+                resp = session.post(
+                    url,
+                    data={
+                        "downloadNow": "true",
+                        "sendMe": "Click to download the update",
+                    },
+                    timeout=timeout,
+                )
+                resp.raise_for_status()
     except requests.RequestException as e:
         raise RuntimeError(f"Failed to download .l2c from {url}: {e}") from e
+
     if not resp.content:
         raise RuntimeError(f"Downloaded .l2c from {url} was empty.")
+    if not _looks_like_l2c_payload(resp):
+        # Nikon returned another HTML page (likely because the token is
+        # expired/invalid). Surface a clear error and include the first
+        # 200 bytes for diagnostics.
+        preview = resp.content[:200].decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"Nikon returned HTML instead of a .l2c file from {url} — "
+            f"the request token is probably invalid or expired. "
+            f"Response preview: {preview!r}"
+        )
 
     filename = ""
     cd = resp.headers.get("Content-Disposition", "")
@@ -320,6 +354,25 @@ def download_l2c(url: str, output_dir: Path, timeout: float = 30.0) -> tuple[Pat
     saved = output_dir / filename
     saved.write_bytes(resp.content)
     return saved, filename
+
+
+def _looks_like_l2c_payload(resp: requests.Response) -> bool:
+    """Heuristic: is this response the binary .l2c or an HTML page?"""
+    content_type = resp.headers.get("Content-Type", "").lower()
+    if "text/html" in content_type:
+        return False
+    cd = resp.headers.get("Content-Disposition", "")
+    if ".l2c" in cd.lower():
+        return True
+    # Nikon's .l2c starts with the XML declaration; HTML pages start with
+    # <!DOCTYPE html> or <html>.
+    head = resp.content[:512]
+    if b"<html" in head.lower() or b"<!doctype html" in head.lower():
+        return False
+    if head.lstrip().startswith(b"<?xml") and b"HASPUpdate" in resp.content[:2048]:
+        return True
+    # Final fallback: reasonable-sized binary body with no HTML markers.
+    return len(resp.content) > 1024 and not content_type.startswith("text/")
 
 
 def extract_haspid_from_l2c_filename(filename: str) -> str:
