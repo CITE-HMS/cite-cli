@@ -12,10 +12,15 @@ covers the rare case where uvx itself fails before Python starts.  The
 
 from __future__ import annotations
 
+import re
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
+
+# Matches ANSI CSI sequences (colours, bold, etc.) so we can strip them from
+# the plain-text log file while keeping the terminal output intact.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 LOGS_DIR = Path.home() / ".cite" / "logs"
 CITE_LOG = LOGS_DIR / "cite.log"
@@ -38,7 +43,7 @@ class _Tee:
         self._log: Any = log_file
 
     def write(self, s: str) -> int:
-        self._log.write(s)
+        self._log.write(_ANSI_RE.sub("", s))
         return self._stream.write(s)  # type: ignore[no-any-return]
 
     def flush(self) -> None:

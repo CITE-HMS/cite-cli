@@ -34,6 +34,25 @@ def test_tee_writes_to_both_streams(tmp_path: Path) -> None:
     assert "hello tee" in log_file.read_text()
 
 
+def test_tee_strips_ansi_from_log_file(tmp_path: Path) -> None:
+    """ANSI codes reach the terminal stream but are stripped from the log file."""
+    import io
+
+    log_file = tmp_path / "ansi.log"
+    with log_file.open("w", encoding="utf-8") as lf:
+        buf = io.StringIO()
+        tee = _Tee(buf, lf)
+        tee.write("\x1b[1;32mcoloured\x1b[0m plain\n")
+        tee.flush()
+
+    # Terminal gets raw ANSI
+    assert "\x1b[1;32m" in buf.getvalue()
+    # Log file has plain text only
+    log_content = log_file.read_text()
+    assert "\x1b" not in log_content
+    assert "coloured plain" in log_content
+
+
 # ---------------------------------------------------------------------------
 # init_logging
 # ---------------------------------------------------------------------------
