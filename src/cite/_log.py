@@ -78,6 +78,16 @@ def init_logging() -> None:
     if isinstance(sys.stdout, _Tee):
         return  # already initialised
 
+    # Close any leaked handler from a prior init (e.g., test runners that
+    # restore sys.stdout out from under us between invocations without
+    # calling close_logging()).
+    if _active_handler is not None:
+        try:
+            _active_handler.close()
+        except Exception:
+            pass
+        _active_handler = None
+
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     handler = RotatingFileHandler(
@@ -93,6 +103,57 @@ def init_logging() -> None:
 
     sys.stdout = _Tee(sys.stdout, log_stream)
     sys.stderr = _Tee(sys.stderr, log_stream)
+
+    _patch_click_for_tee()
+
+
+def _patch_click_for_tee() -> None:
+    """Make click's text-stream helpers honour our sys.stdout replacement.
+
+    Click caches a wrapped TextIO per stream identity, and on Windows it
+    further bypasses sys.stdout entirely via a direct Windows Console
+    Stream when fd 1/2 is a real console. After we install our _Tee
+    wrapper, both the cache and the Windows-console fast path would skip
+    it. We:
+
+    1. Clear click's per-stream cache so the next lookup re-evaluates
+       against the current sys.stdout/stderr (now our _Tee).
+    2. Force click's Windows-console-stream selector to return None so
+       click falls through to the generic `_force_correct_text_writer`
+       path that DOES wrap sys.stdout (and thus our _Tee).
+
+    Safe no-op on non-Windows. Wrapped in try/except so a future click
+    refactor that renames these internals can never break logging.
+    """
+    try:
+        from click import _compat as _click_compat
+
+        for cache_func_name in ("_default_text_stdout", "_default_text_stderr"):
+            cache_func = getattr(_click_compat, cache_func_name, None)
+            cache = getattr(cache_func, "__closure__", None)
+            if cache:
+                for cell in cache:
+                    obj = cell.cell_contents
+                    if hasattr(obj, "clear"):
+                        try:
+                            obj.clear()
+                        except Exception:
+                            pass
+
+        # Override unconditionally. On Windows this neutralises the direct
+        # Windows-Console-Stream fast path that bypasses sys.stdout. On
+        # non-Windows the function already returns None natively, so this
+        # is a defensive no-op — but having it run on every platform makes
+        # the regression test cross-platform.
+        def _no_windows_console(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        _click_compat._get_windows_console_stream = _no_windows_console
+    except Exception:
+        # Logging must never crash the command. If click's internals
+        # change shape, we lose the captured-output feature but
+        # everything else keeps working.
+        pass
 
 
 def close_logging() -> None:
