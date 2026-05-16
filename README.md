@@ -28,6 +28,14 @@ If the path to `uv.exe` contains spaces, wrap it in an extra pair of double quot
 
 ---
 
+### Logging
+
+Every `cite` command automatically writes its full output to a rotating log file at `%USERPROFILE%\.cite\logs\cite.log` (1 MB × 5 backups). You never need to redirect output yourself for day-to-day viewing — run `cite log` to open that folder.
+
+The Task Scheduler arguments below still include a small `>> bootstrap.log 2>&1` redirect. This covers the rare case where `uvx` itself fails before Python starts (e.g. GitHub unreachable, dependency conflict) — no Python code runs in that case, so the internal logger never gets a chance. The bootstrap file lives in the same `.cite\logs\` folder.
+
+---
+
 ### Email alerts on failure
 
 `cite clean`, `cite renew`, and `cite apply-update` all send a failure email when they exit non-zero or raise an uncaught exception. Configure this once per Windows user account; every scheduled task on that account picks it up automatically. If the env vars are absent, alerting silently no-ops.
@@ -66,10 +74,10 @@ If configured correctly, you'll see `Test alert sent to ...` and an email arrive
 
 Deletes files older than N days from one or more directories. When no directory is given, it cleans all default paths found on the machine (`D:/User_Data`, `E:/User_Data`, etc.). Sends a failure alert email if it crashes.
 
-**Task Scheduler arguments** (runs daily, logs to `C:\cite_clean_log.log`):
+**Task Scheduler arguments** (runs daily):
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite clean -d 25 -f > C:\cite_clean_log.log 2>&1"
+/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite clean -d 25 -f >> %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 - `-d 25` — delete files older than 25 days (adjust as needed).
@@ -78,7 +86,7 @@ Deletes files older than N days from one or more directories. When no directory 
 To clean a specific directory instead of the defaults, add the path as the first argument:
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite clean D:\MyData -d 30 -f > C:\cite_clean_log.log 2>&1"
+/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite clean D:\MyData -d 30 -f >> %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 ---
@@ -93,10 +101,10 @@ Submits the NIS-Elements Time-DEMO license renewal form to Nikon when the licens
 - **Idempotent**: once submitted for a given expiration date, won't re-submit until Nikon's updated `.c2v` is applied. State is tracked in `%USERPROFILE%\.cite\renew_state.json`. Safe to schedule daily.
 - Sends a failure alert email if it crashes (requires [email alert setup](#email-alerts-on-failure)).
 
-**Task Scheduler arguments** (runs daily, logs to `C:\cite_renew_log.log`):
+**Task Scheduler arguments** (runs daily):
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite renew --email you@example.com --full-name "Your Name" --url nikon > C:\cite_renew_log.log 2>&1"
+/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite renew --email you@example.com --full-name "Your Name" --url nikon >> %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 On most days, `cite renew` will detect that the license is still outside the renewal window (or already submitted this cycle) and exit cleanly without contacting Nikon.
@@ -139,10 +147,10 @@ Closes the renewal loop: after `cite renew` submits the request, this command po
 
 **Prerequisites:** uses the same Gmail App Password set up for [email alerts](#email-alerts-on-failure). `CITE_ALERT_SMTP_USER` / `CITE_ALERT_SMTP_PASSWORD` serve both outbound SMTP and inbound IMAP — no additional env vars needed.
 
-**Task Scheduler arguments** (runs daily, logs to `C:\cite_apply_log.log`):
+**Task Scheduler arguments** (runs daily):
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite apply-update > C:\cite_apply_log.log 2>&1"
+/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite apply-update >> %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 Schedule at e.g. 01:00. **Stagger start times across machines** to avoid all PCs hitting Gmail simultaneously:
@@ -314,6 +322,21 @@ Update `cite-cli` itself to the latest version from GitHub.
 
 ```
 cite update
+```
+
+No options.
+
+---
+
+### `cite log`
+
+Open the `~/.cite/logs/` folder in the system file manager (Explorer on Windows, Finder on macOS). The folder contains:
+
+- **`cite.log`** — rotating log of all `cite` command output (1 MB × 5 backups). Written automatically by every command.
+- **`bootstrap.log`** — the Task Scheduler redirect target, covering the rare case where `uvx` fails before Python starts.
+
+```
+cite log
 ```
 
 No options.

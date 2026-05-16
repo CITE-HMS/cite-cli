@@ -1,0 +1,100 @@
+"""Tests for the internal rotating-log helper and `cite log` command."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from cite import _log
+from cite._log import _Tee, init_logging
+from cite.cli import app
+
+runner = CliRunner()
+
+
+# ---------------------------------------------------------------------------
+# _Tee
+# ---------------------------------------------------------------------------
+
+
+def test_tee_writes_to_both_streams(tmp_path: Path) -> None:
+    log_file = tmp_path / "out.log"
+    with log_file.open("w", encoding="utf-8") as lf:
+        import io
+
+        buf = io.StringIO()
+        tee = _Tee(buf, lf)
+        tee.write("hello tee\n")
+        tee.flush()
+
+    assert "hello tee" in buf.getvalue()
+    assert "hello tee" in log_file.read_text()
+
+
+# ---------------------------------------------------------------------------
+# init_logging
+# ---------------------------------------------------------------------------
+
+
+def test_init_logging_creates_log_file() -> None:
+    log_path = _log.CITE_LOG
+    assert not log_path.exists()
+    init_logging()
+    assert log_path.exists()
+
+
+def test_init_logging_wraps_stdout() -> None:
+    assert not isinstance(sys.stdout, _Tee)
+    init_logging()
+    assert isinstance(sys.stdout, _Tee)
+
+
+def test_init_logging_is_idempotent() -> None:
+    init_logging()
+    stdout_after_first = sys.stdout
+    init_logging()
+    assert sys.stdout is stdout_after_first  # not double-wrapped
+
+
+def test_init_logging_stdout_written_to_file() -> None:
+    init_logging()
+    sys.stdout.write("sentinel-line\n")
+    sys.stdout.flush()
+    content = _log.CITE_LOG.read_text(encoding="utf-8")
+    assert "sentinel-line" in content
+
+
+# ---------------------------------------------------------------------------
+# cite log command
+# ---------------------------------------------------------------------------
+
+
+def test_cli_log_opens_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """cite log always calls open_logs_dir() and prints the path."""
+    logs_dir = _log.LOGS_DIR
+
+    calls: list[str] = []
+    monkeypatch.setattr(_log, "open_logs_dir", lambda: calls.append("opened"))
+
+    result = runner.invoke(app, ["log"])
+    assert result.exit_code == 0, result.output
+    assert calls == ["opened"]
+    assert str(logs_dir) in result.output
+
+
+def test_cli_log_shows_cite_log_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When cite.log exists, its size is printed."""
+    logs_dir = _log.LOGS_DIR
+    logs_dir.mkdir(parents=True)
+    (_log.CITE_LOG).write_text("x" * 2048, encoding="utf-8")
+
+    monkeypatch.setattr(_log, "open_logs_dir", lambda: None)
+
+    result = runner.invoke(app, ["log"])
+    assert result.exit_code == 0, result.output
+    assert "cite.log" in result.output
