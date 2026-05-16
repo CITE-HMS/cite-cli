@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from typing import TYPE_CHECKING
 
-from cite._renew import hasp_id_to_hex
+from cite._renew import hasp_id_to_hex, hasp_id_to_station
 
 if TYPE_CHECKING:
     from cite._renew import LicenseInfo, RenewState
@@ -98,6 +98,7 @@ def send_urgency_alert(state: RenewState, days_remaining: int) -> bool:
 
     hostname = socket.gethostname()
     hasp_hex = hasp_id_to_hex(state.hasp_id)
+    station = hasp_id_to_station(state.hasp_id)
     now = datetime.now(tz=timezone.utc)
     submitted_age = (now - state.submitted_at).days
 
@@ -108,10 +109,11 @@ def send_urgency_alert(state: RenewState, days_remaining: int) -> bool:
     else:
         days_phrase = f"expiring in {days_remaining} day(s)"
 
+    station_line = f"Station:         {station}\n" if station else ""
     msg = EmailMessage()
     msg["Subject"] = (
         f"[cite-cli] URGENT: NIS-Elements license {days_phrase}, "
-        f"no Nikon reply yet on {hostname}"
+        f"no Nikon reply yet on {station or hostname}"
     )
     msg["From"] = from_addr
     msg["To"] = to_addrs
@@ -120,6 +122,7 @@ def send_urgency_alert(state: RenewState, days_remaining: int) -> bool:
         f"\n"
         f"Host:            {hostname}\n"
         f"HASP ID:         {hasp_hex} (decimal {state.hasp_id})\n"
+        f"{station_line}"
         f"Expiration date: {state.expiration_date.isoformat()} "
         f"({days_phrase})\n"
         f"Renewal submitted: {state.submitted_at.isoformat()} "
@@ -162,11 +165,13 @@ def send_apply_success_email(before: LicenseInfo, after: LicenseInfo) -> bool:
 
     hostname = socket.gethostname()
     hasp_hex = hasp_id_to_hex(before.hasp_id)
+    station = hasp_id_to_station(before.hasp_id)
     days_gained = (after.expiration_date - before.expiration_date).days
     days_left = (after.expiration_date - datetime.now(tz=timezone.utc).date()).days
 
+    station_line = f"Station:     {station}\n" if station else ""
     msg = EmailMessage()
-    msg["Subject"] = f"[cite-cli] NIS-Elements license renewed on {hostname}"
+    msg["Subject"] = f"[cite-cli] NIS-Elements license renewed on {station or hostname}"
     msg["From"] = from_addr
     msg["To"] = to_addrs
     msg.set_content(
@@ -174,6 +179,7 @@ def send_apply_success_email(before: LicenseInfo, after: LicenseInfo) -> bool:
         f"\n"
         f"Host:        {hostname}\n"
         f"HASP ID:     {hasp_hex} (decimal {before.hasp_id})\n"
+        f"{station_line}"
         f"Old expiry:  {before.expiration_date.isoformat()}\n"
         f"New expiry:  {after.expiration_date.isoformat()}"
         f" ({days_left} days from now)\n"

@@ -10,6 +10,16 @@ Command line tools for CITE@HMS.
 
 This section covers everything needed to schedule `cite` commands unattended on Windows. Each subsection describes what the command does, how to configure email alerts, and the exact Task Scheduler arguments to use.
 
+**Three commands are intended to be scheduled** in a typical deployment:
+
+| Task | Purpose |
+|---|---|
+| `cite clean` | Delete old files on a schedule |
+| `cite renew` | Full renewal cycle (submit + apply) |
+| `cite notify-renewal` | Send confirmation email when expiry advances (safety-net for manual applies) |
+
+The `cite apply-update` subsection is documented for advanced use and debugging — it does **not** need its own scheduled task if you already schedule `cite renew`.
+
 ### Common prerequisites
 
 1. Install `uv`: <https://docs.astral.sh/uv/getting-started/installation/>. Note where `uv.exe` lands (e.g. `C:\Users\User\.local\bin\uv.exe`).
@@ -42,7 +52,7 @@ The Task Scheduler arguments below still include a small `> bootstrap.log 2>&1` 
 
 ### Email alerts on failure
 
-`cite clean`, `cite renew`, and `cite apply-update` all send a failure email when they exit non-zero or raise an uncaught exception. Configure this once per Windows user account; every scheduled task on that account picks it up automatically. If the env vars are absent, alerting silently no-ops.
+`cite clean`, `cite renew`, `cite apply-update`, and `cite notify-renewal` all send a failure email when they exit non-zero or raise an uncaught exception. Configure this once per Windows user account; every scheduled task on that account picks it up automatically. If the env vars are absent, alerting silently no-ops.
 
 **One-time setup (PowerShell):**
 
@@ -63,6 +73,17 @@ The Task Scheduler arguments below still include a small `> bootstrap.log 2>&1` 
    ```
 
 To use a non-Gmail SMTP server, also set `CITE_ALERT_SMTP_HOST` (default `smtp.gmail.com`) and `CITE_ALERT_SMTP_PORT` (default `587`, STARTTLS).
+
+**Station names in email subjects:**
+
+When the HASP ID is recognised, email subjects and bodies include the station name instead of (or in addition to) the hostname. The mapping is defined in `src/cite/_renew.py` (`HASP_ID_TO_STATIONS_MAP`). For example, a renewal on a dongle with HASP ID `09882A98` will produce:
+
+```
+Subject: [cite-cli] NIS-Elements license renewed on Station 2
+Body:    Station:     Station 2
+```
+
+If the HASP ID is not in the map, the subject falls back to the machine hostname.
 
 **Verify with a test email:**
 
@@ -161,9 +182,37 @@ uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite renew `
 
 ---
 
+### `cite notify-renewal` — post-renewal email confirmation
+
+Sends the renewal-confirmation email if the dongle's expiration has advanced since the last notification. Idempotent — re-running with no change is a no-op.
+
+**Why schedule this alongside `cite renew`?** When `cite renew` applies an update itself, it sends the confirmation email immediately and updates the tracking file, so `cite notify-renewal` is a no-op. But if you ever apply a license **manually** via Nikon's HASP Update GUI, `cite notify-renewal` will detect the new expiry on its next daily run and send the email. It also acts as a safety net for cases where `cite renew`'s email was not delivered (SMTP misconfigured, network blip).
+
+**No duplicate emails:** `cite renew` writes `%USERPROFILE%\.cite\last_notified_renewal.json` after each successful apply. `cite notify-renewal` only sends an email when the current expiry is *newer* than what's recorded in that file — so if `cite renew` already sent the email, `cite notify-renewal` silently exits.
+
+**One-time setup (per machine — run this once before scheduling):**
+
+```powershell
+uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite notify-renewal --seed
+```
+
+This writes the current expiry as the baseline. Subsequent daily runs are no-ops until the dongle's expiry advances.
+
+**Task Scheduler arguments** (runs daily, same trigger time as `cite renew`):
+
+```bat
+/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite notify-renewal >> %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
+```
+
+---
+
 ### `cite apply-update` — standalone apply-only command (advanced / debugging)
 
 This is the same logic as `cite renew`'s apply phase, exposed as a standalone command for debugging and `--dry-run` testing. **You do not need to schedule this separately if you already schedule `cite renew`** — the apply phase runs there by default.
+
+After a successful apply, `cite apply-update` automatically:
+- Sends the renewal-confirmation email (subject: `[cite-cli] NIS-Elements license renewed on <Station Name or hostname>`).
+- Updates `%USERPROFILE%\.cite\last_notified_renewal.json` so that `cite notify-renewal` (see below) knows the new expiry date and won't re-send.
 
 When useful:
 
@@ -287,6 +336,44 @@ Reads `CITE_ALERT_SMTP_USER` and `CITE_ALERT_SMTP_PASSWORD` for both outbound fa
 
 ---
 
+### `cite notify-renewal`
+
+Send the renewal-confirmation email if the dongle's expiration has advanced since the last notification. Idempotent — re-running with no change is a no-op.
+
+Useful when a license was applied **manually** via Nikon's HASP Update GUI (bypassing `cite apply-update`), or as a scheduled safety-net to catch cases where the email was not delivered during the original `apply-update` run (SMTP misconfigured, network blip, etc.).
+
+```
+cite notify-renewal [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--seed` | `False` | Record the current dongle state as the baseline without sending an email. Run this **once** on each freshly-set-up machine before scheduling the command. |
+
+**First-time setup (per machine):**
+
+```powershell
+uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite notify-renewal --seed
+```
+
+This writes `%USERPROFILE%\.cite\last_notified_renewal.json` with the current expiry date. Subsequent daily runs are no-ops until the dongle's expiry advances (i.e. a renewal was applied).
+
+**Scheduling (optional, Task Scheduler):**
+
+```bat
+/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite notify-renewal > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
+```
+
+**State file:** `%USERPROFILE%\.cite\last_notified_renewal.json` — written atomically; contains `hasp_id`, `expiration_date`, and `notified_at`.
+
+**Edge cases handled automatically:**
+
+- HASP ID changed (dongle replaced): updates baseline silently without sending an email.
+- SMTP configured but delivery fails: tracking file is **not** updated, so the next scheduled run retries.
+- SMTP not configured: tracking file advances silently (no email, no error).
+
+---
+
 ### `cite license`
 
 Read the license expiration date and HASP ID from the local Sentinel HASP dongle.
@@ -321,6 +408,16 @@ cite request-file [OPTIONS]
 | `--output` | `-o` | `%USERPROFILE%\.cite\generated_request.c2l` | Where to write the `.c2l` file. |
 
 If `nis_hasp_update.exe` is not auto-discovered, set `CITE_RUS_EXE` to its full path.
+
+---
+
+### `cite notify-renewal` (reference)
+
+See the [full description above](#cite-notify-renewal).
+
+| Option | Default | Description |
+|---|---|---|
+| `--seed` | `False` | Write the current dongle state as baseline without sending an email. |
 
 ---
 

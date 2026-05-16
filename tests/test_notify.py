@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from cite import _notify, _renew
 from cite._notify import send_apply_success_email, send_failure_email
-from cite._renew import LicenseInfo
+from cite._renew import LicenseInfo, load_last_notified, save_last_notified
 from cite.cli import app
 
 runner = CliRunner()
@@ -397,3 +397,153 @@ def test_send_apply_success_email_swallows_smtp_errors(
     before = _make_license(date(2026, 6, 5))
     after = _make_license(date(2026, 9, 5))
     assert send_apply_success_email(before, after) is False
+
+
+def test_send_apply_success_email_uses_station_name_in_subject(
+    fake_smtp, monkeypatch
+) -> None:
+    _set_creds(monkeypatch)
+    # hasp_id 159918744 → hex 09882A98 → "Station 2" in HASP_ID_TO_STATIONS_MAP
+    before = _make_license(date(2026, 6, 5), hasp_id="159918744")
+    after = _make_license(date(2026, 9, 5), hasp_id="159918744")
+    send_apply_success_email(before, after)
+    msg = fake_smtp.instances[0].sent
+    assert msg is not None
+    assert "Station 2" in msg["Subject"]
+    assert "Station 2" in msg.get_content()
+
+
+def test_send_apply_success_email_falls_back_to_hostname_when_unknown(
+    fake_smtp, monkeypatch
+) -> None:
+    _set_creds(monkeypatch)
+    before = _make_license(date(2026, 6, 5), hasp_id="99999999")
+    after = _make_license(date(2026, 9, 5), hasp_id="99999999")
+    send_apply_success_email(before, after)
+    msg = fake_smtp.instances[0].sent
+    assert msg is not None
+    import socket
+
+    assert socket.gethostname() in msg["Subject"]
+    assert "Station" not in msg.get_content()
+
+
+# --- cite notify-renewal command ---
+
+
+def test_notify_renewal_no_baseline_exits_with_hint(
+    monkeypatch, tmp_last_notified_path: Path
+) -> None:
+    monkeypatch.setattr(
+        _renew,
+        "get_license_info",
+        lambda: LicenseInfo(expiration_date=date(2026, 8, 1), hasp_id="12345678"),
+    )
+    result = runner.invoke(app, ["notify-renewal"])
+    assert result.exit_code == 1
+    assert "--seed" in result.output
+
+
+def test_notify_renewal_seed_writes_baseline_no_email(
+    fake_smtp, monkeypatch, tmp_last_notified_path: Path
+) -> None:
+    _set_creds(monkeypatch)
+    monkeypatch.setattr(
+        _renew,
+        "get_license_info",
+        lambda: LicenseInfo(expiration_date=date(2026, 8, 1), hasp_id="12345678"),
+    )
+    result = runner.invoke(app, ["notify-renewal", "--seed"])
+    assert result.exit_code == 0, result.output
+    assert "Baseline set" in result.output
+    assert fake_smtp.instances == []
+    last = load_last_notified(tmp_last_notified_path)
+    assert last is not None
+    assert last.expiration_date == date(2026, 8, 1)
+    assert last.hasp_id == "12345678"
+
+
+def test_notify_renewal_noop_when_unchanged(
+    fake_smtp, monkeypatch, tmp_last_notified_path: Path
+) -> None:
+    _set_creds(monkeypatch)
+    info = LicenseInfo(expiration_date=date(2026, 8, 1), hasp_id="12345678")
+    save_last_notified(info, tmp_last_notified_path)
+    monkeypatch.setattr(_renew, "get_license_info", lambda: info)
+    result = runner.invoke(app, ["notify-renewal"])
+    assert result.exit_code == 0, result.output
+    assert "no-op" in result.output
+    assert fake_smtp.instances == []
+
+
+def test_notify_renewal_sends_when_expiry_advanced(
+    fake_smtp, monkeypatch, tmp_last_notified_path: Path
+) -> None:
+    _set_creds(monkeypatch)
+    old = LicenseInfo(expiration_date=date(2026, 8, 1), hasp_id="12345678")
+    new = LicenseInfo(expiration_date=date(2027, 8, 1), hasp_id="12345678")
+    save_last_notified(old, tmp_last_notified_path)
+    monkeypatch.setattr(_renew, "get_license_info", lambda: new)
+    result = runner.invoke(app, ["notify-renewal"])
+    assert result.exit_code == 0, result.output
+    assert "Renewal confirmation email sent" in result.output
+    assert len(fake_smtp.instances) == 1
+    last = load_last_notified(tmp_last_notified_path)
+    assert last is not None
+    assert last.expiration_date == date(2027, 8, 1)
+
+
+def test_notify_renewal_no_file_update_on_smtp_failure(
+    monkeypatch, tmp_last_notified_path: Path
+) -> None:
+    _set_creds(monkeypatch)
+
+    class _Broken:
+        def __init__(self, *a: object, **k: object) -> None:
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(_notify.smtplib, "SMTP", _Broken)
+    old = LicenseInfo(expiration_date=date(2026, 8, 1), hasp_id="12345678")
+    new = LicenseInfo(expiration_date=date(2027, 8, 1), hasp_id="12345678")
+    save_last_notified(old, tmp_last_notified_path)
+    monkeypatch.setattr(_renew, "get_license_info", lambda: new)
+    result = runner.invoke(app, ["notify-renewal"])
+    assert result.exit_code == 1
+    assert "SMTP error" in result.output
+    # Tracking file must still show the old date (retry semantics).
+    last = load_last_notified(tmp_last_notified_path)
+    assert last is not None
+    assert last.expiration_date == date(2026, 8, 1)
+
+
+def test_notify_renewal_updates_file_when_unconfigured(
+    fake_smtp, monkeypatch, tmp_last_notified_path: Path
+) -> None:
+    # No SMTP config — email skipped, but tracking file should still advance.
+    old = LicenseInfo(expiration_date=date(2026, 8, 1), hasp_id="12345678")
+    new = LicenseInfo(expiration_date=date(2027, 8, 1), hasp_id="12345678")
+    save_last_notified(old, tmp_last_notified_path)
+    monkeypatch.setattr(_renew, "get_license_info", lambda: new)
+    result = runner.invoke(app, ["notify-renewal"])
+    assert result.exit_code == 0, result.output
+    assert fake_smtp.instances == []
+    last = load_last_notified(tmp_last_notified_path)
+    assert last is not None
+    assert last.expiration_date == date(2027, 8, 1)
+
+
+def test_notify_renewal_hasp_changed_seeds_without_email(
+    fake_smtp, monkeypatch, tmp_last_notified_path: Path
+) -> None:
+    _set_creds(monkeypatch)
+    old = LicenseInfo(expiration_date=date(2026, 8, 1), hasp_id="OLDID")
+    new = LicenseInfo(expiration_date=date(2027, 8, 1), hasp_id="NEWID")
+    save_last_notified(old, tmp_last_notified_path)
+    monkeypatch.setattr(_renew, "get_license_info", lambda: new)
+    result = runner.invoke(app, ["notify-renewal"])
+    assert result.exit_code == 0, result.output
+    assert "HASP ID changed" in result.output
+    assert fake_smtp.instances == []
+    last = load_last_notified(tmp_last_notified_path)
+    assert last is not None
+    assert last.hasp_id == "NEWID"

@@ -7,7 +7,7 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from glob import glob
 from pathlib import Path
@@ -33,6 +33,7 @@ INCOMING_DIR = Path.home() / ".cite" / "incoming"
 APPLIED_L2C_DIR = Path.home() / ".cite" / "applied"
 RECEIVED_L2C_PATH = Path.home() / ".cite" / "received_update.l2c"
 CHECKED_EMAILS_PATH = Path.home() / ".cite" / "checked_emails.json"
+LAST_NOTIFIED_PATH = Path.home() / ".cite" / "last_notified_renewal.json"
 
 CHECKED_EMAILS_TTL_DAYS = 90
 
@@ -207,6 +208,39 @@ def save_renew_state(state: RenewState, path: Path | None = None) -> None:
     os.replace(tmp, path)
 
 
+def load_last_notified(path: Path | None = None) -> LicenseInfo | None:
+    """Read the last-notified renewal record. Returns None if missing or malformed."""
+    if path is None:
+        path = LAST_NOTIFIED_PATH
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    try:
+        data = json.loads(raw)
+        return LicenseInfo(
+            expiration_date=date.fromisoformat(data["expiration_date"]),
+            hasp_id=str(data["hasp_id"]),
+        )
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return None
+
+
+def save_last_notified(info: LicenseInfo, path: Path | None = None) -> None:
+    """Persist the last-notified renewal record atomically."""
+    if path is None:
+        path = LAST_NOTIFIED_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    payload = {
+        "hasp_id": info.hasp_id,
+        "expiration_date": info.expiration_date.isoformat(),
+        "notified_at": datetime.now(timezone.utc).isoformat(),
+    }
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def should_renew(expiration_date: date, days_before: int) -> bool:
     """Return True if a renewal should be submitted.
 
@@ -227,6 +261,25 @@ def hasp_id_to_hex(hasp_id: str) -> str:
         return f"{int(hasp_id):08X}"
     except ValueError:
         return hasp_id
+
+
+HASP_ID_TO_STATIONS_MAP: dict[str, str] = {
+    "57ABC02E": "Station 1 (Dongle 202140)",
+    "09882A98": "Station 2 (Dongle 142841)",
+    "3B8C0A7D": "Station 3 (Dongle 202137)",
+    "4B92F5FA": "Station 5 (Dongle 202136)",
+    "22B5229C": "Station 8 (Dongle 202141)",
+    "42E55C92": "Station 9 (Dongle 202142)",
+    "520D66C9": "Station 10 (Dongle 202140)",
+    "7DCAF069": "Station 14 (Dongle 202134)",
+    "1F5B4CB0": "Station 15 (Dongle 202138)",
+    "45785A00": "Station 18 (Dongle )",
+}
+
+
+def hasp_id_to_station(hasp_id: str) -> str | None:
+    """Return the station name for a HASP ID (decimal string), or None if unknown."""
+    return HASP_ID_TO_STATIONS_MAP.get(hasp_id_to_hex(hasp_id))
 
 
 def discover_rus_exe() -> Path | None:

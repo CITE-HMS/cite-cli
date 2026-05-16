@@ -93,3 +93,11 @@ def tmp_state_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     p = tmp_path / "renew_state.json"
     monkeypatch.setattr(_renew, "RENEW_STATE_PATH", p)
     return p
+
+
+@pytest.fixture()
+def tmp_last_notified_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect the last-notified file to a tmp path so tests never touch $HOME."""
+    p = tmp_path / "last_notified_renewal.json"
+    monkeypatch.setattr(_renew, "LAST_NOTIFIED_PATH", p)
+    return p
