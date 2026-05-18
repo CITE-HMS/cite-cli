@@ -50,6 +50,22 @@ The Task Scheduler arguments below still include a small `> bootstrap.log 2>&1` 
 
 ---
 
+### Skipping when NIS-Elements is open
+
+All three scheduled tasks check whether `nis_ar.exe` is running before doing anything. If NIS-Elements is open, the task exits immediately without touching the dongle, the inbox, or the log file. This prevents license operations from interfering with an active microscopy session.
+
+The check uses a single `||` idiom in the arguments line:
+
+```bat
+tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<path/to/uv.exe>" tool run ...
+```
+
+`tasklist` outputs all running processes; `findstr /I nis_ar.exe` exits 0 if found, non-zero if not. `||` runs the right-hand side only on failure — i.e. only when NIS-Elements is **not** running. The check itself is silent (`> nul 2>&1`). Each Task Scheduler arguments block below already includes this guard.
+
+> **Why not `tasklist /FI "IMAGENAME eq nis_ar.exe"`?** That form requires inner double quotes which conflict with the outer `/c "..."` wrapping in Task Scheduler's arguments field, breaking the command silently. The plain `tasklist | findstr` form avoids all quoting issues.
+
+---
+
 ### Email alerts on failure
 
 `cite clean`, `cite renew`, `cite apply-update`, and `cite notify-renewal` all send a failure email when they exit non-zero or raise an uncaught exception. Configure this once per Windows user account; every scheduled task on that account picks it up automatically. If the env vars are absent, alerting silently no-ops.
@@ -102,7 +118,7 @@ Deletes files older than N days from one or more directories. When no directory 
 **Task Scheduler arguments** (runs daily):
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite clean -d 25 -f > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
+/c "tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<path/to/uv.exe>" tool run --from git+https://github.com/CITE-HMS/cite-cli cite clean -d 25 -f > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 - `-d 25` — delete files older than 25 days (adjust as needed).
@@ -111,7 +127,7 @@ Deletes files older than N days from one or more directories. When no directory 
 To clean a specific directory instead of the defaults, add the path as the first argument:
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite clean D:\MyData -d 30 -f > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
+/c "tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<path/to/uv.exe>" tool run --from git+https://github.com/CITE-HMS/cite-cli cite clean D:\MyData -d 30 -f > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 ---
@@ -140,7 +156,7 @@ Each phase has its own failure-alert wrapper — a failure in phase 1 does **not
 **Task Scheduler arguments** (runs daily):
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite renew --email you@example.com --full-name "Your Name" --url nikon > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
+/c "tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<path/to/uv.exe>" tool run --from git+https://github.com/CITE-HMS/cite-cli cite renew --email you@example.com --full-name "Your Name" --url nikon > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 Schedule at e.g. 01:00. **Stagger start times across machines** to avoid all PCs hitting Gmail simultaneously:
@@ -201,7 +217,7 @@ This writes the current expiry as the baseline. Subsequent daily runs are no-ops
 **Task Scheduler arguments** (runs daily, same trigger time as `cite renew`):
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite notify-renewal > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
+/c ""<path/to/uv.exe>" tool run --from git+https://github.com/CITE-HMS/cite-cli cite notify-renewal > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 ---
@@ -222,7 +238,7 @@ When useful:
 If you do want a separate, IMAP-only Task Scheduler entry (e.g. to poll more frequently than `cite renew` runs):
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite apply-update > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
+/c ""<path/to/uv.exe>" tool run --from git+https://github.com/CITE-HMS/cite-cli cite apply-update > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 Stagger across machines the same way as `cite renew` (random delay in Task Scheduler).
@@ -360,7 +376,7 @@ This writes `%USERPROFILE%\.cite\last_notified_renewal.json` with the current ex
 **Scheduling (optional, Task Scheduler):**
 
 ```bat
-/c "<path/to/uv.exe> tool run --from git+https://github.com/CITE-HMS/cite-cli cite notify-renewal > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
+/c ""<path/to/uv.exe>" tool run --from git+https://github.com/CITE-HMS/cite-cli cite notify-renewal > %USERPROFILE%\.cite\logs\bootstrap.log 2>&1"
 ```
 
 **State file:** `%USERPROFILE%\.cite\last_notified_renewal.json` — written atomically; contains `hasp_id`, `expiration_date`, and `notified_at`.
