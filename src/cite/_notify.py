@@ -57,16 +57,25 @@ def send_failure_email(command: str, error: BaseException) -> bool:
     from_addr = os.environ.get("CITE_ALERT_FROM", user)
 
     hostname = socket.gethostname()
+    station: str | None = None
+    try:
+        from cite._renew import get_license_info
+
+        station = hasp_id_to_station(get_license_info().hasp_id)
+    except Exception:
+        pass
+    location = station if station else hostname
     tb = "".join(traceback.format_exception(error))
 
     msg = EmailMessage()
-    msg["Subject"] = f"[cite-cli] {command} failed on {hostname}"
+    msg["Subject"] = f"[cite-cli] {command} failed on {location}"
     msg["From"] = from_addr
     msg["To"] = to_addrs
     msg.set_content(
         f"Command: cite {command}\n"
         f"Host:    {hostname}\n"
-        f"Error:   {type(error).__name__}: {error}\n\n"
+        + (f"Station: {station}\n" if station else "")
+        + f"Error:   {type(error).__name__}: {error}\n\n"
         f"Traceback:\n{tb}"
     )
 

@@ -149,7 +149,11 @@ def get_license_info(hasp_id: str | None = None) -> LicenseInfo:
     the response is malformed.
     """
     try:
-        resp = requests.get(ACC_URL, timeout=5)
+        resp = requests.get(
+            ACC_URL,
+            timeout=5,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
         resp.raise_for_status()
     except requests.RequestException as e:
         raise RuntimeError(
@@ -501,7 +505,14 @@ def _looks_like_l2c_payload(resp: requests.Response) -> bool:
         return True
     # Reject well-known binary formats that are clearly not .l2c XML
     # (PDF, ZIP, PNG, JPEG, GIF, BMP) before accepting the fallback.
-    _NON_L2C_MAGIC = (b"%PDF", b"PK\x03\x04", b"\x89PNG", b"GIF8", b"\xff\xd8\xff", b"BM")
+    _NON_L2C_MAGIC = (
+        b"%PDF",
+        b"PK\x03\x04",
+        b"\x89PNG",
+        b"GIF8",
+        b"\xff\xd8\xff",
+        b"BM",
+    )
     if any(head[: len(m)] == m for m in _NON_L2C_MAGIC):
         return False
     # Final fallback: reasonable-sized binary body with no HTML markers.

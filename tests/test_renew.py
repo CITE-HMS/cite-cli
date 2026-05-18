@@ -284,8 +284,12 @@ def test_cli_renew_rejects_unknown_url(c2l_file: Path) -> None:
     assert result.exit_code != 0
 
 
-def test_cli_renew_no_renewal_needed(c2l_file: Path, monkeypatch, tmp_state_path: Path) -> None:
-    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=365)))
+def test_cli_renew_no_renewal_needed(
+    c2l_file: Path, monkeypatch, tmp_state_path: Path
+) -> None:
+    monkeypatch.setattr(
+        _renew, "get_license_info", _info_factory(date.today() + timedelta(days=365))
+    )
     result = runner.invoke(
         app,
         [
@@ -305,7 +309,9 @@ def test_cli_renew_no_renewal_needed(c2l_file: Path, monkeypatch, tmp_state_path
 
 
 def test_cli_renew_dry_run(c2l_file: Path, monkeypatch, tmp_state_path: Path) -> None:
-    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=3)))
+    monkeypatch.setattr(
+        _renew, "get_license_info", _info_factory(date.today() + timedelta(days=3))
+    )
     result = runner.invoke(
         app,
         [
@@ -326,8 +332,12 @@ def test_cli_renew_dry_run(c2l_file: Path, monkeypatch, tmp_state_path: Path) ->
     assert "me@example.com" in result.output
 
 
-def test_cli_renew_end_to_end(mock_server, c2l_file: Path, monkeypatch, tmp_state_path: Path) -> None:
-    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=3)))
+def test_cli_renew_end_to_end(
+    mock_server, c2l_file: Path, monkeypatch, tmp_state_path: Path
+) -> None:
+    monkeypatch.setattr(
+        _renew, "get_license_info", _info_factory(date.today() + timedelta(days=3))
+    )
     result = runner.invoke(
         app,
         [
@@ -350,8 +360,12 @@ def test_cli_renew_end_to_end(mock_server, c2l_file: Path, monkeypatch, tmp_stat
     assert "CLI User" in log
 
 
-def test_cli_renew_with_c2l_mock_sentinel(mock_server, monkeypatch, tmp_state_path: Path) -> None:
-    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=3)))
+def test_cli_renew_with_c2l_mock_sentinel(
+    mock_server, monkeypatch, tmp_state_path: Path
+) -> None:
+    monkeypatch.setattr(
+        _renew, "get_license_info", _info_factory(date.today() + timedelta(days=3))
+    )
     result = runner.invoke(
         app,
         [
@@ -373,7 +387,9 @@ def test_cli_renew_with_c2l_mock_sentinel(mock_server, monkeypatch, tmp_state_pa
     assert "mock.c2l" in log
 
 
-def test_cli_renew_missing_c2l_exits_nonzero(tmp_path: Path, tmp_state_path: Path) -> None:
+def test_cli_renew_missing_c2l_exits_nonzero(
+    tmp_path: Path, tmp_state_path: Path
+) -> None:
     result = runner.invoke(
         app,
         [
@@ -408,7 +424,9 @@ def test_cli_renew_auto_starts_mock_when_port_free(
         URL_ALIASES, RenewTarget.test.value, f"http://127.0.0.1:{port}/"
     )
     monkeypatch.chdir(tmp_path)  # submissions.log lands in CWD
-    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=3)))
+    monkeypatch.setattr(
+        _renew, "get_license_info", _info_factory(date.today() + timedelta(days=3))
+    )
     result = runner.invoke(
         app,
         [
@@ -441,7 +459,9 @@ def test_cli_renew_reuses_running_mock_when_port_in_use(
     mock_server, c2l_file: Path, monkeypatch, tmp_state_path: Path
 ) -> None:
     """If a mock is already running, renew should reuse it (not auto-start)."""
-    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=3)))
+    monkeypatch.setattr(
+        _renew, "get_license_info", _info_factory(date.today() + timedelta(days=3))
+    )
     result = runner.invoke(
         app,
         [
@@ -474,8 +494,12 @@ def test_safety_net_blocks_real_nikon_url(c2l_file: Path) -> None:
         )
 
 
-def test_cli_renew_force_overrides_window(mock_server, c2l_file: Path, monkeypatch, tmp_state_path: Path) -> None:
-    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=365)))
+def test_cli_renew_force_overrides_window(
+    mock_server, c2l_file: Path, monkeypatch, tmp_state_path: Path
+) -> None:
+    monkeypatch.setattr(
+        _renew, "get_license_info", _info_factory(date.today() + timedelta(days=365))
+    )
     result = runner.invoke(
         app,
         [
@@ -537,6 +561,33 @@ def test_get_license_info_real_acc_payload_shape(mock_acc) -> None:
 
 def test_get_license_info_connection_refused(monkeypatch) -> None:
     monkeypatch.setattr(_renew, "ACC_URL", "http://127.0.0.1:1/_int_/tab_feat.html")
+    with pytest.raises(RuntimeError, match="Could not reach"):
+        get_license_info()
+
+
+def test_get_license_info_sends_browser_user_agent(mock_acc) -> None:
+    """ACC rejects python-requests UA with 400; verify we send a Mozilla UA."""
+    received_ua: list[str] = []
+
+    original_do_get = _ACCHandler.do_GET
+
+    def capturing_do_get(self: _ACCHandler) -> None:
+        received_ua.append(self.headers.get("User-Agent", ""))
+        original_do_get(self)
+
+    mock_acc.xml_body = _acc_feed(_nikon_feat(date(2026, 6, 5)))
+    _ACCHandler.do_GET = capturing_do_get  # type: ignore[method-assign]
+    try:
+        get_license_info()
+    finally:
+        _ACCHandler.do_GET = original_do_get  # type: ignore[method-assign]
+
+    assert received_ua, "No request received by mock ACC"
+    assert "Mozilla" in received_ua[0], f"Expected Mozilla UA, got: {received_ua[0]!r}"
+
+
+def test_get_license_info_raises_on_400(mock_acc) -> None:
+    mock_acc.status = 400
     with pytest.raises(RuntimeError, match="Could not reach"):
         get_license_info()
 
@@ -1033,7 +1084,9 @@ def test_cli_renew_no_apply_skips_apply_phase(
         raise AssertionError("apply_update should not be called when --no-apply")
 
     monkeypatch.setattr(cli, "apply_update", boom_if_called)
-    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=3)))
+    monkeypatch.setattr(
+        _renew, "get_license_info", _info_factory(date.today() + timedelta(days=3))
+    )
 
     result = runner.invoke(
         app,
@@ -1070,7 +1123,9 @@ def test_cli_renew_continues_when_apply_phase_fails(
 
     monkeypatch.setattr(cli, "apply_update", failing_apply)
 
-    monkeypatch.setattr(_renew, "get_license_info", _info_factory(date.today() + timedelta(days=3)))
+    monkeypatch.setattr(
+        _renew, "get_license_info", _info_factory(date.today() + timedelta(days=3))
+    )
 
     result = runner.invoke(
         app,
