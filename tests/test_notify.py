@@ -66,7 +66,42 @@ def _set_creds(monkeypatch, **overrides: str) -> None:
         monkeypatch.setenv(k, v)
 
 
-# --- send_failure_email ---
+def test_send_failure_email_uses_station_from_live_acc(fake_smtp, monkeypatch) -> None:
+    """Subject uses station name from a live ACC query when ACC is reachable."""
+    _set_creds(monkeypatch)
+    # 09882A98 hex = 159918744 decimal → "Station 2 (Dongle 142841)"
+    monkeypatch.setattr(
+        _renew,
+        "get_license_info",
+        lambda *_a, **_k: LicenseInfo(
+            expiration_date=date(2026, 6, 5), hasp_id="159918744"
+        ),
+    )
+
+    assert send_failure_email("notify-renewal", RuntimeError("boom")) is True
+    sent = fake_smtp.instances[0]
+    assert sent.sent is not None
+    assert "Station 2" in sent.sent["Subject"]
+    assert "Station 2" in sent.sent.get_content()
+
+
+def test_send_failure_email_falls_back_to_hostname_when_acc_unreachable(
+    fake_smtp, monkeypatch
+) -> None:
+    """When ACC fails, hostname is used as location."""
+    _set_creds(monkeypatch)
+    monkeypatch.setattr(
+        _renew,
+        "get_license_info",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("ACC down")),
+    )
+
+    import socket
+
+    assert send_failure_email("renew", RuntimeError("x")) is True
+    sent = fake_smtp.instances[0]
+    assert sent.sent is not None
+    assert socket.gethostname() in sent.sent["Subject"]
 
 
 def test_send_failure_email_noop_when_unconfigured(fake_smtp) -> None:
