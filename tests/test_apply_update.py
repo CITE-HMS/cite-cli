@@ -792,11 +792,14 @@ def test_cli_apply_update_matches_and_applies(
     """One matching email out of two; the right .l2c is applied, state cleaned up."""
     state = _setup_pending_state(monkeypatch, tmp_state_path, days_until_exp=10)
 
+    now_utc = datetime.now(timezone.utc)
     fake_imap.next_mailboxes = {
         "[Gmail]/All Mail": [
             _make_email(
                 message_id="<other-pc-1@x>",
-                date_hdr="Thu, 14 May 2026 10:00:00 +0000",
+                date_hdr=(now_utc - timedelta(days=4)).strftime(
+                    "%a, %d %b %Y 10:00:00 +0000"
+                ),
                 body=_VALID_BODY.replace(
                     "e556d5faf993ece4b7eaaa56fa5be2ad",
                     "1" * 32,
@@ -804,7 +807,9 @@ def test_cli_apply_update_matches_and_applies(
             ),
             _make_email(
                 message_id="<ours@x>",
-                date_hdr="Fri, 15 May 2026 10:00:00 +0000",
+                date_hdr=(now_utc - timedelta(days=3)).strftime(
+                    "%a, %d %b %Y 10:00:00 +0000"
+                ),
                 body=_VALID_BODY.replace(
                     "e556d5faf993ece4b7eaaa56fa5be2ad",
                     "2" * 32,
