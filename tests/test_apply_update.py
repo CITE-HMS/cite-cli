@@ -887,7 +887,9 @@ def test_cli_apply_update_sends_success_email(
         "[Gmail]/All Mail": [
             _make_email(
                 message_id="<ours@success>",
-                date_hdr="Fri, 15 May 2026 10:00:00 +0000",
+                date_hdr=(datetime.now(timezone.utc) - timedelta(days=4)).strftime(
+                    "%a, %d %b %Y 10:00:00 +0000"
+                ),
                 body=_VALID_BODY,
             )
         ]
@@ -955,7 +957,9 @@ def test_cli_apply_update_no_match_in_urgency_window(
         "[Gmail]/All Mail": [
             _make_email(
                 message_id="<not-ours@x>",
-                date_hdr="Fri, 15 May 2026 10:00:00 +0000",
+                date_hdr=(datetime.now(timezone.utc) - timedelta(days=4)).strftime(
+                    "%a, %d %b %Y 10:00:00 +0000"
+                ),
                 body=_VALID_BODY,
             )
         ]
@@ -1025,7 +1029,9 @@ def test_cli_apply_update_cache_skips_known_other_pc(
         "[Gmail]/All Mail": [
             _make_email(
                 message_id="<not-ours@x>",
-                date_hdr="Fri, 15 May 2026 10:00:00 +0000",
+                date_hdr=(datetime.now(timezone.utc) - timedelta(days=4)).strftime(
+                    "%a, %d %b %Y 10:00:00 +0000"
+                ),
                 body=_VALID_BODY,
             )
         ]
@@ -1055,7 +1061,9 @@ def test_cli_apply_update_dry_run_no_state(
         "[Gmail]/All Mail": [
             _make_email(
                 message_id="<x@y>",
-                date_hdr="Fri, 15 May 2026 10:00:00 +0000",
+                date_hdr=(datetime.now(timezone.utc) - timedelta(days=4)).strftime(
+                    "%a, %d %b %Y 10:00:00 +0000"
+                ),
                 body=_VALID_BODY,
             )
         ]
@@ -1094,7 +1102,9 @@ def test_cli_apply_update_dry_run_marks_match(
         "[Gmail]/All Mail": [
             _make_email(
                 message_id="<ours@x>",
-                date_hdr="Fri, 15 May 2026 10:00:00 +0000",
+                date_hdr=(datetime.now(timezone.utc) - timedelta(days=4)).strftime(
+                    "%a, %d %b %Y 10:00:00 +0000"
+                ),
                 body=_VALID_BODY,
             )
         ]
@@ -1153,7 +1163,9 @@ def test_cli_apply_update_reuses_staged_file_on_retry(
         "[Gmail]/All Mail": [
             _make_email(
                 message_id="<ours@retry>",
-                date_hdr="Fri, 15 May 2026 10:00:00 +0000",
+                date_hdr=(datetime.now(timezone.utc) - timedelta(days=4)).strftime(
+                    "%a, %d %b %Y 10:00:00 +0000"
+                ),
                 body=_VALID_BODY,
             )
         ]
@@ -1212,7 +1224,9 @@ def test_cli_apply_update_apply_l2c_failure_evicts_cache_and_deletes_staged(
         "[Gmail]/All Mail": [
             _make_email(
                 message_id="<ours@fail>",
-                date_hdr="Fri, 15 May 2026 10:00:00 +0000",
+                date_hdr=(datetime.now(timezone.utc) - timedelta(days=4)).strftime(
+                    "%a, %d %b %Y 10:00:00 +0000"
+                ),
                 body=_VALID_BODY,
             )
         ]
