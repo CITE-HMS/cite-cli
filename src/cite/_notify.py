@@ -25,7 +25,11 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from typing import TYPE_CHECKING
 
-from cite._renew import hasp_id_to_hex, hasp_id_to_station
+from cite._renew import (
+    hasp_id_to_hex,
+    hasp_id_to_station,
+    load_cached_hasp_id,
+)
 
 if TYPE_CHECKING:
     from cite._renew import LicenseInfo, RenewState
@@ -64,6 +68,10 @@ def send_failure_email(command: str, error: BaseException) -> bool:
         station = hasp_id_to_station(get_license_info().hasp_id)
     except Exception:
         pass
+    if not station:
+        cached = load_cached_hasp_id()
+        if cached:
+            station = hasp_id_to_station(cached)
     location = station if station else hostname
     tb = "".join(traceback.format_exception(error))
 

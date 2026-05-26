@@ -37,6 +37,7 @@ RECEIVED_L2C_PATH = Path.home() / ".cite" / "received_update.l2c"
 CHECKED_EMAILS_PATH = Path.home() / ".cite" / "checked_emails.json"
 LAST_NOTIFIED_PATH = Path.home() / ".cite" / "last_notified_renewal.json"
 LAST_URGENCY_PATH = Path.home() / ".cite" / "last_urgency_alert.json"
+LAST_HASP_ID_PATH = Path.home() / ".cite" / "last_hasp_id.txt"
 
 CHECKED_EMAILS_TTL_DAYS = 90
 
@@ -182,7 +183,13 @@ def get_license_info(hasp_id: str | None = None) -> LicenseInfo:
         )
 
     entries.sort(key=lambda x: x[0])
-    return LicenseInfo(expiration_date=entries[0][0], hasp_id=entries[0][1])
+    info = LicenseInfo(expiration_date=entries[0][0], hasp_id=entries[0][1])
+    try:
+        LAST_HASP_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LAST_HASP_ID_PATH.write_text(info.hasp_id)
+    except OSError:
+        pass
+    return info
 
 
 def _atomic_replace(src: Path, dst: Path) -> None:
@@ -339,6 +346,18 @@ HASP_ID_TO_STATIONS_MAP: dict[str, str] = {
 def hasp_id_to_station(hasp_id: str) -> str | None:
     """Return the station name for a HASP ID (decimal string), or None if unknown."""
     return HASP_ID_TO_STATIONS_MAP.get(hasp_id_to_hex(hasp_id))
+
+
+def load_cached_hasp_id() -> str | None:
+    """Return the last HASP ID seen via Sentinel, or None if no cache exists.
+
+    Fallback for failure emails when the live Sentinel call is itself the
+    thing that failed — see send_failure_email in _notify.py.
+    """
+    try:
+        return LAST_HASP_ID_PATH.read_text().strip() or None
+    except OSError:
+        return None
 
 
 def discover_rus_exe() -> Path | None:
