@@ -20,6 +20,7 @@ from cite._renew import (
     discover_rus_exe,
     generate_c2l,
     get_license_info,
+    load_cached_hasp_id,
     load_renew_state,
     resolve_c2l_file,
     resolve_url,
@@ -92,7 +93,7 @@ def mock_acc(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), _ACCHandler)
     host, port = server.server_address[:2]
     url = f"http://{host}:{port}/_int_/tab_feat.html"
-    monkeypatch.setattr(_renew, "ACC_URL", url)
+    monkeypatch.setattr(_renew, "ACC_URLS", (url,))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -560,9 +561,27 @@ def test_get_license_info_real_acc_payload_shape(mock_acc) -> None:
 
 
 def test_get_license_info_connection_refused(monkeypatch) -> None:
-    monkeypatch.setattr(_renew, "ACC_URL", "http://127.0.0.1:1/_int_/tab_feat.html")
+    monkeypatch.setattr(
+        _renew,
+        "ACC_URLS",
+        ("http://127.0.0.1:1/_int_/tab_feat.html",),
+    )
     with pytest.raises(RuntimeError, match="Could not reach"):
         get_license_info()
+
+
+def test_get_license_info_falls_back_to_second_url(mock_acc, monkeypatch) -> None:
+    """If the first ACC URL fails (newer RTE 400s the bare URL), the second
+    URL with query params is tried."""
+    working_url = _renew.ACC_URLS[0]
+    monkeypatch.setattr(
+        _renew,
+        "ACC_URLS",
+        ("http://127.0.0.1:1/_int_/tab_feat.html", working_url),
+    )
+    mock_acc.xml_body = _acc_feed(_nikon_feat(date(2026, 6, 5)))
+    info = get_license_info()
+    assert info == LicenseInfo(expiration_date=date(2026, 6, 5), hasp_id="159918744")
 
 
 def test_get_license_info_sends_browser_user_agent(mock_acc) -> None:
@@ -622,6 +641,23 @@ def test_get_license_info_unparsable_body(mock_acc) -> None:
     mock_acc.xml_body = b"/*JSON:features*/ this is not json at all"
     with pytest.raises(RuntimeError, match="unparsable features feed"):
         get_license_info()
+
+
+def test_get_license_info_caches_hasp_id(mock_acc) -> None:
+    """A successful ACC call writes the HASP ID to LAST_HASP_ID_PATH so
+    later failure emails can still resolve the station when ACC is down."""
+    mock_acc.xml_body = _acc_feed(_nikon_feat(date(2026, 6, 5), haspid="159918744"))
+    get_license_info()
+    assert _renew.LAST_HASP_ID_PATH.read_text().strip() == "159918744"
+
+
+def test_load_cached_hasp_id_missing() -> None:
+    assert load_cached_hasp_id() is None
+
+
+def test_load_cached_hasp_id_returns_stored_value() -> None:
+    _renew.LAST_HASP_ID_PATH.write_text("159918744\n")
+    assert load_cached_hasp_id() == "159918744"
 
 
 # --- state file helpers ---

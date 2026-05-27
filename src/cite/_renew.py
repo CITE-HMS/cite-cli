@@ -22,8 +22,15 @@ DEFAULT_DAYS_BEFORE = 14
 MOCK_C2L_SENTINEL = "mock"
 MOCK_C2L_PATH = Path(__file__).parent / "mock_renew" / "mock.c2l"
 
-ACC_URL = "http://localhost:1947/_int_/tab_feat.html"
 NIKON_VENDOR_ID = "40094"
+# Newer RTE (≥ HASP LM 22) 400s the bare URL and requires the `vendorid` +
+# `featureid` query params. Older RTE accepts the bare URL. Try bare first
+# (proven on the existing fleet), then the param'd URL as a fallback.
+_ACC_BASE = "http://localhost:1947/_int_/tab_feat.html"
+ACC_URLS: tuple[str, ...] = (
+    _ACC_BASE,
+    f"{_ACC_BASE}?vendorid={NIKON_VENDOR_ID}&featureid=-1",
+)
 
 _JSON_HEADER_RE = re.compile(rb"^/\*JSON:[^*]*\*/", re.DOTALL)
 _JSON_TRAILER_RE = re.compile(rb"/\*.*?\*/\s*$", re.DOTALL)
@@ -131,13 +138,33 @@ def _parse_exp_date(lic: str) -> date | None:
     return datetime.strptime(f"{month} {day} {year}", "%b %d %Y").date()
 
 
+def fetch_acc_response() -> requests.Response:
+    """Fetch the ACC features feed, trying each URL in ACC_URLS until one works.
+
+    Newer RTE rejects the bare URL and requires query params; older RTE accepts
+    the bare URL. Raises RuntimeError if none responds.
+    """
+    last_error: Exception | None = None
+    for url in ACC_URLS:
+        try:
+            resp = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            return resp
+        except requests.RequestException as e:
+            last_error = e
+    raise RuntimeError(
+        f"Could not reach Sentinel ACC at any of {ACC_URLS} — "
+        f"is hasplms running? ({last_error})"
+    ) from last_error
+
+
 def get_license_info(hasp_id: str | None = None) -> LicenseInfo:
     """Return the earliest Nikon-vendor expiration date and HASP key ID via ACC.
 
-    Queries the local Sentinel HASP Admin Control Center at
-    `http://localhost:1947/_int_/tab_feat.html` (read-only) and parses its
-    pseudo-JSON features feed. Filters by Nikon's vendor ID (`40094`) and
-    skips perpetual features.
+    Queries the local Sentinel HASP Admin Control Center via `fetch_acc_response`
+    (which tries `ACC_URLS` in order) and parses its pseudo-JSON features feed.
+    Filters by Nikon's vendor ID (`40094`) client-side and skips
+    perpetual features.
 
     If *hasp_id* (decimal string as reported by ACC) is given, only features
     for that specific key are considered — used by `apply_l2c` to validate the
@@ -149,18 +176,7 @@ def get_license_info(hasp_id: str | None = None) -> LicenseInfo:
     Raises RuntimeError if ACC is unreachable, no matching feature is found, or
     the response is malformed.
     """
-    try:
-        resp = requests.get(
-            ACC_URL,
-            timeout=5,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        raise RuntimeError(
-            f"Could not reach Sentinel ACC at {ACC_URL} — is hasplms running? ({e})"
-        ) from e
-
+    resp = fetch_acc_response()
     records = _parse_acc_features(resp.content)
 
     entries: list[tuple[date, str]] = []
