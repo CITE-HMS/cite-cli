@@ -565,7 +565,9 @@ def renew(
             return
 
         if c2l_path is None:
-            typer.secho(f"{_ts()}Internal error: no .c2l path available.", fg="red", err=True)
+            typer.secho(
+                f"{_ts()}Internal error: no .c2l path available.", fg="red", err=True
+            )
             raise typer.Exit(1)
         typer.secho(f"{_ts()}Submitting renewal request to {url} ...")
         with _auto_mock_server_if_needed(target, url):
@@ -604,20 +606,13 @@ def license_info(
     ),
 ) -> None:
     """Read the NIS-Elements license expiration date from the local HASP dongle."""
-    import requests
-
-    from cite._renew import ACC_URL, get_license_info
+    from cite._renew import fetch_acc_response, get_license_info
 
     if raw:
         try:
-            resp = requests.get(ACC_URL, timeout=5)
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            typer.secho(
-                f"{_ts()}Could not reach Sentinel ACC at {ACC_URL}: {e}",
-                fg="red",
-                err=True,
-            )
+            resp = fetch_acc_response()
+        except RuntimeError as e:
+            typer.secho(f"{_ts()}{e}", fg="red", err=True)
             raise typer.Exit(1) from e
         typer.echo(resp.text)
         return

@@ -22,8 +22,15 @@ DEFAULT_DAYS_BEFORE = 14
 MOCK_C2L_SENTINEL = "mock"
 MOCK_C2L_PATH = Path(__file__).parent / "mock_renew" / "mock.c2l"
 
-ACC_URL = "http://localhost:1947/_int_/tab_feat.html"
 NIKON_VENDOR_ID = "40094"
+# Newer RTE (≥ HASP LM 22) 400s the bare URL and requires the `vendorid` +
+# `featureid` query params. Older RTE accepts the bare URL. Try bare first
+# (proven on the existing fleet), then the param'd URL as a fallback.
+_ACC_BASE = "http://localhost:1947/_int_/tab_feat.html"
+ACC_URLS: tuple[str, ...] = (
+    _ACC_BASE,
+    f"{_ACC_BASE}?vendorid={NIKON_VENDOR_ID}&featureid=-1",
+)
 
 _JSON_HEADER_RE = re.compile(rb"^/\*JSON:[^*]*\*/", re.DOTALL)
 _JSON_TRAILER_RE = re.compile(rb"/\*.*?\*/\s*$", re.DOTALL)
@@ -37,6 +44,7 @@ RECEIVED_L2C_PATH = Path.home() / ".cite" / "received_update.l2c"
 CHECKED_EMAILS_PATH = Path.home() / ".cite" / "checked_emails.json"
 LAST_NOTIFIED_PATH = Path.home() / ".cite" / "last_notified_renewal.json"
 LAST_URGENCY_PATH = Path.home() / ".cite" / "last_urgency_alert.json"
+LAST_HASP_ID_PATH = Path.home() / ".cite" / "last_hasp_id.txt"
 
 CHECKED_EMAILS_TTL_DAYS = 90
 
@@ -130,13 +138,33 @@ def _parse_exp_date(lic: str) -> date | None:
     return datetime.strptime(f"{month} {day} {year}", "%b %d %Y").date()
 
 
+def fetch_acc_response() -> requests.Response:
+    """Fetch the ACC features feed, trying each URL in ACC_URLS until one works.
+
+    Newer RTE rejects the bare URL and requires query params; older RTE accepts
+    the bare URL. Raises RuntimeError if none responds.
+    """
+    last_error: Exception | None = None
+    for url in ACC_URLS:
+        try:
+            resp = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            return resp
+        except requests.RequestException as e:
+            last_error = e
+    raise RuntimeError(
+        f"Could not reach Sentinel ACC at any of {ACC_URLS} — "
+        f"is hasplms running? ({last_error})"
+    ) from last_error
+
+
 def get_license_info(hasp_id: str | None = None) -> LicenseInfo:
     """Return the earliest Nikon-vendor expiration date and HASP key ID via ACC.
 
-    Queries the local Sentinel HASP Admin Control Center at
-    `http://localhost:1947/_int_/tab_feat.html` (read-only) and parses its
-    pseudo-JSON features feed. Filters by Nikon's vendor ID (`40094`) and
-    skips perpetual features.
+    Queries the local Sentinel HASP Admin Control Center via `fetch_acc_response`
+    (which tries `ACC_URLS` in order) and parses its pseudo-JSON features feed.
+    Filters by Nikon's vendor ID (`40094`) client-side and skips
+    perpetual features.
 
     If *hasp_id* (decimal string as reported by ACC) is given, only features
     for that specific key are considered — used by `apply_l2c` to validate the
@@ -148,18 +176,7 @@ def get_license_info(hasp_id: str | None = None) -> LicenseInfo:
     Raises RuntimeError if ACC is unreachable, no matching feature is found, or
     the response is malformed.
     """
-    try:
-        resp = requests.get(
-            ACC_URL,
-            timeout=5,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        raise RuntimeError(
-            f"Could not reach Sentinel ACC at {ACC_URL} — is hasplms running? ({e})"
-        ) from e
-
+    resp = fetch_acc_response()
     records = _parse_acc_features(resp.content)
 
     entries: list[tuple[date, str]] = []
@@ -182,7 +199,13 @@ def get_license_info(hasp_id: str | None = None) -> LicenseInfo:
         )
 
     entries.sort(key=lambda x: x[0])
-    return LicenseInfo(expiration_date=entries[0][0], hasp_id=entries[0][1])
+    info = LicenseInfo(expiration_date=entries[0][0], hasp_id=entries[0][1])
+    try:
+        LAST_HASP_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LAST_HASP_ID_PATH.write_text(info.hasp_id)
+    except OSError:
+        pass
+    return info
 
 
 def _atomic_replace(src: Path, dst: Path) -> None:
@@ -339,6 +362,18 @@ HASP_ID_TO_STATIONS_MAP: dict[str, str] = {
 def hasp_id_to_station(hasp_id: str) -> str | None:
     """Return the station name for a HASP ID (decimal string), or None if unknown."""
     return HASP_ID_TO_STATIONS_MAP.get(hasp_id_to_hex(hasp_id))
+
+
+def load_cached_hasp_id() -> str | None:
+    """Return the last HASP ID seen via Sentinel, or None if no cache exists.
+
+    Fallback for failure emails when the live Sentinel call is itself the
+    thing that failed — see send_failure_email in _notify.py.
+    """
+    try:
+        return LAST_HASP_ID_PATH.read_text().strip() or None
+    except OSError:
+        return None
 
 
 def discover_rus_exe() -> Path | None:

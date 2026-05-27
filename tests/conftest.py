@@ -105,5 +105,13 @@ def tmp_last_notified_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
 
 @pytest.fixture(autouse=True)
 def _isolate_urgency_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Redirect LAST_URGENCY_PATH so tests never touch ~/.cite/last_urgency_alert.json."""
-    monkeypatch.setattr(_renew, "LAST_URGENCY_PATH", tmp_path / "last_urgency_alert.json")
+    """Redirect LAST_URGENCY_PATH so tests never touch .cite/last_urgency_alert.json."""
+    monkeypatch.setattr(
+        _renew, "LAST_URGENCY_PATH", tmp_path / "last_urgency_alert.json"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_last_hasp_id_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirect LAST_HASP_ID_PATH so tests never touch ~/.cite/last_hasp_id.txt."""
+    monkeypatch.setattr(_renew, "LAST_HASP_ID_PATH", tmp_path / "last_hasp_id.txt")
