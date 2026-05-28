@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import typer
 
 import cite
-from cite._renew import RenewTarget, hasp_id_to_hex
+from cite._renew import RenewTarget, hasp_id_to_hex, hasp_id_to_station
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 STATE = {"verbose": False}
@@ -504,7 +504,9 @@ def renew(
         exp_date, hasp_id = info.expiration_date, info.hasp_id
 
         # Match the hex form Nikon's tools display (e.g. "09882A98").
-        note = f"{note} [HASP ID: {hasp_id_to_hex(hasp_id)}]"
+        station = hasp_id_to_station(hasp_id)
+        station_part = f"{station} | " if station else ""
+        note = f"{note} [{station_part}HASP ID: {hasp_id_to_hex(hasp_id)}]"
 
         days_left = (exp_date - datetime.now().date()).days
         typer.secho(

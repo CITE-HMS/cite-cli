@@ -26,7 +26,7 @@ dependencies = ["click", "typer", "requests"]
 # extras
 # https://peps.python.org/pep-0621/#dependencies-optional-dependencies
 [project.optional-dependencies]
-test = ["pytest>=6.0", "pytest-cov"]
+test = ["pytest>=6.0", "pytest-cov", "pytest-xdist"]
 dev = [
     "cite-cli[test]",
     "ipython",

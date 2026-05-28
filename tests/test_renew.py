@@ -851,10 +851,11 @@ def test_cli_renew_writes_state_after_submit(
 def test_cli_renew_appends_hasp_id_to_note(
     mock_server, c2l_file: Path, tmp_state_path: Path, monkeypatch
 ) -> None:
-    """The HASP ID (hex, uppercase, zero-padded) must be appended to the note
-    so Nikon's renewal staff can identify the dongle in the submission."""
+    """The HASP ID (hex, uppercase, zero-padded) and station name (when known)
+    must be appended to the note so Nikon's renewal staff can identify the
+    dongle in the submission."""
     near = date.today() + timedelta(days=3)
-    # 159918744 decimal = 09882A98 hex (matches Nikon's filename convention).
+    # 159918744 decimal = 09882A98 hex → "Station 2 (Dongle 142841)".
     monkeypatch.setattr(
         _renew,
         "get_license_info",
@@ -865,7 +866,28 @@ def test_cli_renew_appends_hasp_id_to_note(
     assert result.exit_code == 0, result.output
 
     log = mock_server["log_path"].read_text(encoding="utf-8")
-    assert "[HASP ID: 09882A98]" in log
+    assert "[Station 2 (Dongle 142841) | HASP ID: 09882A98]" in log
+
+
+def test_cli_renew_note_omits_station_when_unknown(
+    mock_server, c2l_file: Path, tmp_state_path: Path, monkeypatch
+) -> None:
+    """If the HASP ID isn't in HASP_ID_TO_STATIONS_MAP, the note falls back to
+    the HASP-ID-only format."""
+    near = date.today() + timedelta(days=3)
+    # 1 decimal = 00000001 hex — not in HASP_ID_TO_STATIONS_MAP.
+    monkeypatch.setattr(
+        _renew,
+        "get_license_info",
+        lambda: LicenseInfo(expiration_date=near, hasp_id="1"),
+    )
+
+    result = _invoke_renew_no_expires(c2l_file, email="hex@example.com")
+    assert result.exit_code == 0, result.output
+
+    log = mock_server["log_path"].read_text(encoding="utf-8")
+    # The opening bracket sits directly before "HASP ID:" — no station prefix.
+    assert "[HASP ID: 00000001]" in log
 
 
 def test_cli_renew_dedup_skips_second_run(
