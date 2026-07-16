@@ -57,6 +57,30 @@ RUS_EXE_GLOB_PATTERNS = (
     "C:/Program Files (x86)/NIS-Elements*/HASP/nis_hasp_update.exe",
 )
 
+HASP_ID_TO_STATIONS_MAP: dict[str, str] = {
+    "57ABC02E": "Station 1 (Dongle 202140)",
+    "09882A98": "Station 2 (Dongle 142841)",
+    "3B8C0A7D": "Station 3 (Dongle 202137)",
+    "4B92F5FA": "Station 5 (Dongle 202136)",
+    "22B5229C": "Station 8 (Dongle 202141)",
+    "42E55C92": "Station 9 (Dongle 202142)",
+    "520D66C9": "Station 10 (Dongle 202140)",
+    "7DCAF069": "Station 14 (Dongle 202134)",
+    "1F5B4CB0": "Station 15 (Dongle 202138)",
+    "45785A00": "Station 18 (Dongle )",
+}
+
+# Stations whose network blocks outbound IMAP to imap.gmail.com (TLS handshake
+# reset partway through, seen on Harvard's network — likely SSL-inspecting
+# firewall). Until that's resolved, `cite apply-update` skips the IMAP poll
+# for these stations rather than failing every run. Remove entries here once
+# a station's network access is fixed.
+APPLY_PHASE_DISABLED_HASP_IDS: set[str] = {
+    "3B8C0A7D",  # Station 3 (Dongle 202137)
+    "22B5229C",  # Station 8 (Dongle 202141)
+    "1F5B4CB0",  # Station 15 (Dongle 202138)
+}
+
 
 class RenewTarget(str, Enum):
     nikon = "nikon"
@@ -343,20 +367,6 @@ def hasp_id_to_hex(hasp_id: str) -> str:
         return f"{int(hasp_id):08X}"
     except ValueError:
         return hasp_id
-
-
-HASP_ID_TO_STATIONS_MAP: dict[str, str] = {
-    "57ABC02E": "Station 1 (Dongle 202140)",
-    "09882A98": "Station 2 (Dongle 142841)",
-    "3B8C0A7D": "Station 3 (Dongle 202137)",
-    "4B92F5FA": "Station 5 (Dongle 202136)",
-    "22B5229C": "Station 8 (Dongle 202141)",
-    "42E55C92": "Station 9 (Dongle 202142)",
-    "520D66C9": "Station 10 (Dongle 202140)",
-    "7DCAF069": "Station 14 (Dongle 202134)",
-    "1F5B4CB0": "Station 15 (Dongle 202138)",
-    "45785A00": "Station 18 (Dongle )",
-}
 
 
 def hasp_id_to_station(hasp_id: str) -> str | None:

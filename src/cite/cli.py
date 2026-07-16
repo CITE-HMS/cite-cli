@@ -690,6 +690,7 @@ def apply_update(
     from cite._notify import send_apply_success_email, send_urgency_alert
     from cite._renew import (
         APPLIED_L2C_DIR,
+        APPLY_PHASE_DISABLED_HASP_IDS,
         INCOMING_DIR,
         RECEIVED_L2C_PATH,
         RENEW_STATE_PATH,
@@ -721,6 +722,16 @@ def apply_update(
             typer.secho(
                 f"{_ts()}Nothing to apply (no pending renewal on this PC).",
                 fg="green",
+            )
+            return
+
+        if hasp_id_to_hex(state.hasp_id) in APPLY_PHASE_DISABLED_HASP_IDS:
+            station = hasp_id_to_station(state.hasp_id) or state.hasp_id
+            typer.secho(
+                f"{_ts()}Apply phase temporarily disabled for {station} "
+                "(known IMAP network block on this station's network). "
+                "Skipping IMAP poll — check Gmail manually for Nikon's reply.",
+                fg="yellow",
             )
             return
 
