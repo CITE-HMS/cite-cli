@@ -47,7 +47,7 @@ jobs:
         run: pytest --cov --cov-report=xml
 
       - name: Coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
 
   deploy:
     name: Deploy
