@@ -1166,7 +1166,7 @@ def test_cli_renew_detects_renewal_sends_email_and_invites(
     assert result.exit_code == 0, result.output
     assert "Renewal detected" in result.output
     assert "Renewal confirmation email sent" in result.output
-    assert "Calendar reminder invites sent" in result.output
+    assert "Calendar reminder invite sent" in result.output
     assert "No renewal needed" in result.output  # submit phase still ran
     # Two emails: confirmation + calendar invite (with the ICS part).
     assert len(fake_smtp.instances) == 2

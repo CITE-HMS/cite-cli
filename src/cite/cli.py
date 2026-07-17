@@ -733,8 +733,9 @@ def _check_and_notify_renewal(*, auto_seed: bool, strict: bool = False) -> None:
             expiry=current.expiration_date,
         ):
             typer.secho(
-                f"{_ts()}Calendar reminder invites sent "
-                f"(14 d / 7 d / day-of {current.expiration_date.isoformat()}).",
+                f"{_ts()}Calendar reminder invite sent "
+                f"(weekly series: 14 d / 7 d / day-of "
+                f"{current.expiration_date.isoformat()}).",
                 fg="green",
             )
         else:

@@ -52,7 +52,7 @@ def _set_creds(monkeypatch) -> None:
 # --- build_reminder_ics ------------------------------------------------------
 
 
-def test_ics_has_three_all_day_events_on_correct_days() -> None:
+def test_ics_has_one_recurring_all_day_event_on_correct_days() -> None:
     ics = build_reminder_ics(
         station="Station 5 (Dongle 202136)",
         hasp_hex="4B92F5FA",
@@ -60,16 +60,15 @@ def test_ics_has_three_all_day_events_on_correct_days() -> None:
         organizer="sender@example.com",
         attendees=["a@example.com"],
     )
-    assert ics.count("BEGIN:VEVENT") == 3
+    assert ics.count("BEGIN:VEVENT") == 1
     assert "METHOD:REQUEST" in ics
-    # 14 days before, 7 days before, day-of (with DTEND the next day).
+    # The weekly series starts 14 days before expiry and has three occurrences.
     assert "DTSTART;VALUE=DATE:20270718" in ics
-    assert "DTSTART;VALUE=DATE:20270725" in ics
-    assert "DTSTART;VALUE=DATE:20270801" in ics
-    assert "DTEND;VALUE=DATE:20270802" in ics
+    assert "DTEND;VALUE=DATE:20270719" in ics
+    assert "RRULE:FREQ=WEEKLY;COUNT=3" in ics
 
 
-def test_ics_titles_follow_apps_script_convention() -> None:
+def test_ics_has_generic_series_title_and_expiry_description() -> None:
     ics = build_reminder_ics(
         station="Station 5 (Dongle 202136)",
         hasp_hex="4B92F5FA",
@@ -78,10 +77,25 @@ def test_ics_titles_follow_apps_script_convention() -> None:
         attendees=["a@example.com"],
     )
     unfolded = ics.replace("\r\n ", "")
-    assert "license expires in 14 days — HASP 4B92F5FA" in unfolded
-    assert "license expires in 7 days — HASP 4B92F5FA" in unfolded
-    assert "license EXPIRES TODAY — HASP 4B92F5FA" in unfolded
-    assert "Station 5 (Dongle 202136)" in unfolded
+    assert (
+        "SUMMARY:NIS-Elements license renewal reminder — "
+        "Station 5 (Dongle 202136)" in unfolded
+    )
+    assert "HASP: 4B92F5FA" in unfolded
+    assert r"expires August 1\, 2027" in unfolded
+    assert r"14 days before\, 7 days before\, and on the expiration date" in unfolded
+
+
+def test_ics_escapes_text_values() -> None:
+    ics = build_reminder_ics(
+        station=r"Station 5, Room A; North\Wing",
+        hasp_hex="4B92F5FA",
+        expiry=date(2027, 8, 1),
+        organizer="sender@example.com",
+        attendees=["a@example.com"],
+    )
+    unfolded = ics.replace("\r\n ", "")
+    assert r"Station 5\, Room A\; North\\Wing" in unfolded
 
 
 def test_ics_uids_are_deterministic() -> None:
@@ -93,10 +107,9 @@ def test_ics_uids_are_deterministic() -> None:
         attendees=["a@example.com"],
     )
     a, b = build_reminder_ics(**kwargs), build_reminder_ics(**kwargs)  # type: ignore[arg-type]
-    for offset in ("14d", "7d", "0d"):
-        uid = f"UID:cite-4B92F5FA-2027-08-01-{offset}@cite-hms"
-        assert uid in a
-        assert uid in b
+    uid = "UID:cite-4B92F5FA-2027-08-01-reminders@cite-hms"
+    assert a.count(uid) == 1
+    assert b.count(uid) == 1
 
 
 def test_ics_uses_crlf_and_folds_long_lines() -> None:
@@ -109,7 +122,7 @@ def test_ics_uses_crlf_and_folds_long_lines() -> None:
     )
     assert "\n" not in ics.replace("\r\n", "")
     for line in ics.split("\r\n"):
-        assert len(line) <= 74
+        assert len(line.encode("utf-8")) <= 74
 
 
 def test_ics_lists_all_attendees() -> None:
@@ -120,8 +133,8 @@ def test_ics_lists_all_attendees() -> None:
         organizer="sender@example.com",
         attendees=["a@example.com", "b@example.com"],
     )
-    assert ics.count("ATTENDEE;RSVP=FALSE:mailto:a@example.com") == 3
-    assert ics.count("ATTENDEE;RSVP=FALSE:mailto:b@example.com") == 3
+    assert ics.count("ATTENDEE;RSVP=FALSE:mailto:a@example.com") == 1
+    assert ics.count("ATTENDEE;RSVP=FALSE:mailto:b@example.com") == 1
 
 
 # --- send_reminder_invites ---------------------------------------------------
@@ -141,6 +154,11 @@ def test_send_delivers_calendar_part(fake_smtp, monkeypatch) -> None:
     assert "Calendar reminders" in msg["Subject"]
     assert "2027-08-01" in msg["Subject"]
     assert msg["To"] == "a@example.com, b@example.com"
+    body = msg.get_body(preferencelist=("plain",)).get_content()
+    assert "Expiration date: August 1, 2027" in body
+    assert "July 18, 2027 — 14 days before expiration" in body
+    assert "July 25, 2027 — 7 days before expiration" in body
+    assert "August 1, 2027 — expiration day" in body
     raw = msg.as_string()
     assert 'method="REQUEST"' in raw or "method=REQUEST" in raw
     assert "text/calendar" in raw

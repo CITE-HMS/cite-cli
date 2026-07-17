@@ -129,7 +129,7 @@ To clean a specific directory instead of the defaults, add the path as the first
 
 Runs the renewal loop daily. **One Task Scheduler entry per machine** covers everything:
 
-**Step 1 — detect a completed renewal:** if the dongle's expiration advanced since the last recorded baseline (i.e. someone applied Nikon's update manually via the HASP Update GUI), it sends the confirmation email (`[cite-cli] NIS-Elements license renewed on <Station>`) **and a Google-Calendar invite** with three all-day reminder events: 14 days before, 7 days before, and on the new expiration date. The invite is emailed to `CITE_ALERT_TO`; Gmail adds the events to that account's Google Calendar automatically — no interaction needed. Any stale pending-submission state is cleared.
+**Step 1 — detect a completed renewal:** if the dongle's expiration advanced since the last recorded baseline (i.e. someone applied Nikon's update manually via the HASP Update GUI), it sends the confirmation email (`[cite-cli] NIS-Elements license renewed on <Station>`) **and one Google-Calendar invite** for a recurring all-day reminder series. Its three weekly occurrences fall 14 days before, 7 days before, and on the new expiration date. The invite is emailed to `CITE_ALERT_TO`; Google Calendar adds recognized invitations according to that account's **Add invitations to my calendar** setting. Any stale pending-submission state is cleared.
 
 **Step 2 — submit:** reads the dongle's expiration via ACC, checks the renewal window (default 14 days), and submits a fresh `.c2l` to Nikon if needed. While a submission is pending and the license is within 4 days of expiry, sends an URGENT reminder email (throttled to one per 20 h) to apply Nikon's reply manually.
 

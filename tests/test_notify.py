@@ -556,7 +556,7 @@ def test_notify_renewal_sends_when_expiry_advanced(
     result = runner.invoke(app, ["notify-renewal"])
     assert result.exit_code == 0, result.output
     assert "Renewal confirmation email sent" in result.output
-    assert "Calendar reminder invites sent" in result.output
+    assert "Calendar reminder invite sent" in result.output
     # Two emails: the confirmation, then the calendar invite.
     assert len(fake_smtp.instances) == 2
     invite = fake_smtp.instances[1].sent
