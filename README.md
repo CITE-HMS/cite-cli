@@ -10,15 +10,14 @@ Command line tools for CITE@HMS.
 
 This section covers everything needed to schedule `cite` commands unattended on Windows. Each subsection describes what the command does, how to configure email alerts, and the exact Task Scheduler arguments to use.
 
-**Three commands are intended to be scheduled** in a typical deployment:
+**Two commands are intended to be scheduled** in a typical deployment:
 
 | Task | Purpose |
 |---|---|
 | `cite clean` | Delete old files on a schedule |
-| `cite renew` | Full renewal cycle (submit + apply) |
-| `cite notify-renewal` | Send confirmation email when expiry advances (safety-net for manual applies) |
+| `cite renew` | Monitor the license, submit renewal requests to Nikon, and detect applied renewals (confirmation email + Google-Calendar reminders) |
 
-The `cite apply-update` subsection is documented for advanced use and debugging — it does **not** need its own scheduled task if you already schedule `cite renew`.
+Applying Nikon's reply is a **manual step**: download the `.l2c` from the link in Nikon's email and apply it on the station via the HASP Update GUI (`nis_hasp_update.exe`). The next daily `cite renew` run detects the new expiration date automatically.
 
 ### Common prerequisites
 
@@ -46,7 +45,7 @@ The Task Scheduler arguments below still include a small `> bootstrap.log 2>&1` 
 
 ### Skipping when NIS-Elements is open
 
-All three scheduled tasks check whether `nis_ar.exe` is running before doing anything. If NIS-Elements is open, the task exits immediately without touching the dongle, the inbox, or the log file. This prevents license operations from interfering with an active microscopy session.
+The scheduled tasks check whether `nis_ar.exe` is running before doing anything. If NIS-Elements is open, the task exits immediately without touching the dongle or the log file. This prevents license operations from interfering with an active microscopy session.
 
 The check uses a single `||` idiom in the arguments line:
 
@@ -62,7 +61,7 @@ tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<path/to/uv.exe>" tool run ...
 
 ### Email alerts on failure
 
-`cite clean`, `cite renew`, `cite apply-update`, and `cite notify-renewal` all send a failure email when they exit non-zero or raise an uncaught exception. Configure this once per Windows user account; every scheduled task on that account picks it up automatically. If the env vars are absent, alerting silently no-ops.
+`cite clean`, `cite renew`, and `cite notify-renewal` all send a failure email when they exit non-zero or raise an uncaught exception. Configure this once per Windows user account; every scheduled task on that account picks it up automatically. If the env vars are absent, alerting silently no-ops.
 
 **One-time setup (PowerShell):**
 
@@ -126,26 +125,23 @@ To clean a specific directory instead of the defaults, add the path as the first
 
 ---
 
-### `cite renew` — full renewal cycle (apply then submit) in one command
+### `cite renew` — monitor, submit, and detect renewals in one daily command
 
-Runs the complete renewal loop daily: first apply Nikon's reply if one is pending, then submit a fresh request if the dongle is in the renewal window. **One Task Scheduler entry per machine** covers both halves of the cycle.
+Runs the renewal loop daily. **One Task Scheduler entry per machine** covers everything:
 
-**Phase 1 — apply** (runs first; skip with `--no-apply`): if `%USERPROFILE%\.cite\renew_state.json` exists, polls the shared Gmail inbox for Nikon's `.l2c` reply, downloads it, verifies the HASP ID matches this dongle, and applies it via `nis_hasp_update.exe -a`. Sends an URGENT email if no matching reply has arrived AND the license expires in ≤ 4 days.
+**Step 1 — detect a completed renewal:** if the dongle's expiration advanced since the last recorded baseline (i.e. someone applied Nikon's update manually via the HASP Update GUI), it sends the confirmation email (`[cite-cli] NIS-Elements license renewed on <Station>`) **and a Google-Calendar invite** with three all-day reminder events: 14 days before, 7 days before, and on the new expiration date. The invite is emailed to `CITE_ALERT_TO`; Gmail adds the events to that account's Google Calendar automatically — no interaction needed. Any stale pending-submission state is cleared.
 
-**Phase 2 — submit** (always runs unless phase 1 raised): reads the dongle's expiration via ACC, checks the renewal window, and submits a fresh `.c2l` to Nikon if needed.
+**Step 2 — submit:** reads the dongle's expiration via ACC, checks the renewal window (default 14 days), and submits a fresh `.c2l` to Nikon if needed. While a submission is pending and the license is within 4 days of expiry, sends an URGENT reminder email (throttled to one per 20 h) to apply Nikon's reply manually.
 
-Each phase has its own failure-alert wrapper — a failure in phase 1 does **not** block phase 2.
+**The apply step is manual by design:** when Nikon's reply arrives in the shared inbox, download the `.l2c` from the `dealers/download.php?request=...` link (each link is one-time!) and apply it on the matching station via the HASP Update GUI (`nis_hasp_update.exe`). The filename (`<HASPHEX>.l2c`) tells you which station it belongs to — see `HASP_ID_TO_STATIONS_MAP` in `src/cite/_renew.py`. The next daily run picks up the new expiry and handles the notifications.
 
-**Per-phase details:**
+**Details:**
 
-- Phase 2 reads expiration live from the local Sentinel HASP dongle via ACC at `http://localhost:1947`.
-- Phase 2 auto-generates the `.c2l` by running `nis_hasp_update.exe -r` (discovered under `C:\Program Files\NIS-Elements*\HASP\`).
+- Expiration is read live from the local Sentinel HASP dongle via ACC at `http://localhost:1947`.
+- The `.c2l` is auto-generated by running `nis_hasp_update.exe -r` (discovered under `C:\Program Files\NIS-Elements*\HASP\`).
 - The submission note includes the HASP ID (e.g. `09882A98`) so Nikon's staff can identify the dongle.
-- **Idempotent**: once submitted for a given expiration date, won't re-submit until Nikon's updated `.c2v` is applied (state in `%USERPROFILE%\.cite\renew_state.json`). Safe to schedule daily.
-- Phase 1's multi-PC handling: the shared `citeathms@gmail.com` inbox receives replies for every microscope. Each candidate `.l2c` is identified by its HASP-ID-in-filename (`<HEX>.l2c`); we apply only the one matching this PC. Other PCs' Message-IDs are cached in `~/.cite/checked_emails.json` so they are never re-downloaded.
-- **Defense-in-depth**: HASP ID is verified from the filename before applying, and `nis_hasp_update.exe` itself rejects key-type mismatches.
-
-**Prerequisites for phase 1:** uses the same Gmail App Password set up for [email alerts](#email-alerts-on-failure). `CITE_ALERT_SMTP_USER` / `CITE_ALERT_SMTP_PASSWORD` serve both outbound SMTP and inbound IMAP — no additional env vars needed.
+- **Idempotent**: once submitted for a given expiration date, won't re-submit until the renewal is applied (state in `%USERPROFILE%\.cite\renew_state.json`). Safe to schedule daily.
+- The renewal-detection baseline (`%USERPROFILE%\.cite\last_notified_renewal.json`) auto-seeds on the first run of a fresh machine — no setup step needed.
 
 **Task Scheduler arguments** (runs daily):
 
@@ -153,12 +149,9 @@ Each phase has its own failure-alert wrapper — a failure in phase 1 does **not
 /c "tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<path/to/uv.exe>" tool run --refresh --from git+https://github.com/CITE-HMS/cite-cli cite renew --email you@example.com --full-name "Your Name" --url nikon > "%USERPROFILE%\.cite\logs\bootstrap.log" 2>&1"
 ```
 
-Schedule at e.g. 01:00. **Stagger start times across machines** to avoid all PCs hitting Gmail simultaneously:
+Schedule at e.g. 01:00 (a random delay per machine is still a good idea to spread the load).
 
-- **(Recommended)** In the trigger's **Edit** dialog, enable **Delay task for up to (random delay)** and set 1 hour. Task Scheduler picks a different random offset each run.
-- Or set a fixed offset per PC (01:00, 01:05, 01:10, …).
-
-On most days the apply phase exits cleanly because no `.cite/renew_state.json` exists (no pending renewal), and the submit phase exits cleanly because the license isn't yet within the 14-day window — net effect: a quick log line and exit 0.
+On most days both steps exit cleanly — no renewal detected, license not yet within the 14-day window — net effect: a quick log line and exit 0.
 
 **Optional overrides:**
 
@@ -174,12 +167,6 @@ On most days the apply phase exits cleanly because no `.cite/renew_state.json` e
   ... cite renew --email ... --full-name ... --url nikon --c2l-file C:\path\to\file.c2l
   ```
 
-- To skip the apply phase (e.g. for testing the submit path in isolation):
-
-  ```bat
-  ... cite renew ... --no-apply
-  ```
-
 **Dry-run (no side effects):**
 
 ```powershell
@@ -188,88 +175,19 @@ uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite renew `
     --force --dry-run
 ```
 
-`--force` bypasses the renewal-window check; `--dry-run` skips the POST and the `.c2l` generation. Nothing is submitted or written. (The apply phase runs but its `--dry-run` semantics — diagnostic-only, no apply — also apply.)
+`--force` bypasses the renewal-window check; `--dry-run` skips the POST and the `.c2l` generation. Nothing is submitted or written.
 
 ---
 
-### `cite notify-renewal` — post-renewal email confirmation
+### `cite notify-renewal` — manual renewal check (optional)
 
-Sends the renewal-confirmation email if the dongle's expiration has advanced since the last notification. Idempotent — re-running with no change is a no-op.
+Runs the same renewal-detection check as `cite renew` step 1 (confirmation email + calendar invites when the expiry advanced), as a standalone command. **You do not need to schedule this if `cite renew` is scheduled** — the check runs there daily. It exists for manual/one-off use, e.g. right after applying an update by hand when you don't want to wait for the next scheduled run.
 
-**Why schedule this alongside `cite renew`?** When `cite renew` applies an update itself, it sends the confirmation email immediately and updates the tracking file, so `cite notify-renewal` is a no-op. But if you ever apply a license **manually** via Nikon's HASP Update GUI, `cite notify-renewal` will detect the new expiry on its next daily run and send the email. It also acts as a safety net for cases where `cite renew`'s email was not delivered (SMTP misconfigured, network blip).
-
-**No duplicate emails:** `cite renew` writes `%USERPROFILE%\.cite\last_notified_renewal.json` after each successful apply. `cite notify-renewal` only sends an email when the current expiry is *newer* than what's recorded in that file — so if `cite renew` already sent the email, `cite notify-renewal` silently exits.
-
-**One-time setup (per machine — run this once before scheduling):**
+**No duplicate emails:** the check only fires when the current expiry is *newer* than what's recorded in `%USERPROFILE%\.cite\last_notified_renewal.json`; once notified, re-running is a no-op. The baseline auto-seeds on first run; `--seed` re-baselines explicitly without sending an email.
 
 ```powershell
-uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite notify-renewal --seed
+uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite notify-renewal
 ```
-
-This writes the current expiry as the baseline. Subsequent daily runs are no-ops until the dongle's expiry advances.
-
-**Task Scheduler arguments** (runs daily, same trigger time as `cite renew`):
-
-```bat
-/c ""<path/to/uv.exe>" tool run --refresh --from git+https://github.com/CITE-HMS/cite-cli cite notify-renewal > "%USERPROFILE%\.cite\logs\bootstrap.log" 2>&1"
-```
-
----
-
-### `cite apply-update` — standalone apply-only command (advanced / debugging)
-
-This is the same logic as `cite renew`'s apply phase, exposed as a standalone command for debugging and `--dry-run` testing. **You do not need to schedule this separately if you already schedule `cite renew`** — the apply phase runs there by default.
-
-After a successful apply, `cite apply-update` automatically:
-- Sends the renewal-confirmation email (subject: `[cite-cli] NIS-Elements license renewed on <Station Name or hostname>`).
-- Updates `%USERPROFILE%\.cite\last_notified_renewal.json` so that `cite notify-renewal` (see below) knows the new expiry date and won't re-send.
-
-When useful:
-
-- **`--dry-run` mode**: cross-platform diagnostic. Polls IMAP, downloads candidate `.l2c` files into a tmp dir, parses HASP IDs, and reports what was found — without invoking `nis_hasp_update.exe`, writing state, or touching the production cache. Lets you verify your Gmail credentials and the inbox shape on macOS before deploying to Windows.
-- **Manual one-shot apply**: if you've manually placed a `~/.cite/renew_state.json` and want to force the apply step without the submit phase running afterward.
-
-If you do want a separate, IMAP-only Task Scheduler entry (e.g. to poll more frequently than `cite renew` runs):
-
-```bat
-/c ""<path/to/uv.exe>" tool run --refresh --from git+https://github.com/CITE-HMS/cite-cli cite apply-update > "%USERPROFILE%\.cite\logs\bootstrap.log" 2>&1"
-```
-
-Stagger across machines the same way as `cite renew` (random delay in Task Scheduler).
-
-**Dry-run (cross-platform, no dongle needed):**
-
-Polls IMAP, downloads candidate `.l2c` files into a temp dir, reports what was found — without invoking `nis_hasp_update.exe`, writing state, or touching the production cache. Useful for verifying the inbox + download pipeline on macOS before deploying to Windows.
-
-```bash
-# macOS / Linux — set env vars first
-export CITE_ALERT_SMTP_USER="you@gmail.com"
-export CITE_ALERT_SMTP_PASSWORD="xxxx xxxx xxxx xxxx"
-export CITE_ALERT_TO="you@gmail.com"
-
-uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite apply-update --dry-run
-```
-
-Example output:
-
-```text
-[2026-05-15 ...] DRY RUN: no renew_state.json on this machine — running in pure-diagnostic mode.
-[2026-05-15 ...] Found 2 candidate email(s).
-[2026-05-15 ...] Downloading into /var/folders/.../cite-apply-dryrun-XYZ (you can delete this after).
-
-  ┌─ #1
-  │  From:     ahus@lim.cz
-  │  Sent:     2026-05-15T10:30:00+00:00
-  │  Token:    e556d5faf993ece4b7eaaa56fa5be2ad
-  │  URL:      https://nis-e-update.nikon-instruments.jp/dealers/download.php?request=...
-  │  File:     520D66C9.l2c (20,114 bytes)
-  │  HASPID:   1376609993 (hex 520D66C9) [parsed from filename]
-  └─
-
-[2026-05-15 ...] DRY RUN complete. Nothing was applied or persisted.
-```
-
-If `~/.cite/renew_state.json` exists on the machine, the report also shows `Match: YES` next to the candidate whose HASP ID matches the local dongle.
 
 ---
 
@@ -329,27 +247,9 @@ cite renew --email EMAIL --full-name NAME --url TARGET [OPTIONS]
 
 ---
 
-### `cite apply-update`
-
-Poll the shared Gmail inbox for Nikon's `.l2c` reply and apply it to the local HASP dongle.
-
-```
-cite apply-update [OPTIONS]
-```
-
-| Option | Short | Default | Env var | Description |
-|---|---|---|---|---|
-| `--dry-run` | `-n` | `False` | | Poll IMAP, download candidate `.l2c` files into a temp dir, and print a report — without applying anything, writing state, or touching the production cache. Cross-platform; no dongle required. |
-
-Reads `CITE_ALERT_SMTP_USER` and `CITE_ALERT_SMTP_PASSWORD` for both outbound failure emails and inbound IMAP access.
-
----
-
 ### `cite notify-renewal`
 
-Send the renewal-confirmation email if the dongle's expiration has advanced since the last notification. Idempotent — re-running with no change is a no-op.
-
-Useful when a license was applied **manually** via Nikon's HASP Update GUI (bypassing `cite apply-update`), or as a scheduled safety-net to catch cases where the email was not delivered during the original `apply-update` run (SMTP misconfigured, network blip, etc.).
+Run the renewal-detection check (confirmation email + Google-Calendar reminder invites when the dongle's expiration has advanced since the last notification). Idempotent — re-running with no change is a no-op. The same check runs automatically on every `cite renew`.
 
 ```
 cite notify-renewal [OPTIONS]
@@ -357,28 +257,15 @@ cite notify-renewal [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `--seed` | `False` | Record the current dongle state as the baseline without sending an email. Run this **once** on each freshly-set-up machine before scheduling the command. |
-
-**First-time setup (per machine):**
-
-```powershell
-uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite notify-renewal --seed
-```
-
-This writes `%USERPROFILE%\.cite\last_notified_renewal.json` with the current expiry date. Subsequent daily runs are no-ops until the dongle's expiry advances (i.e. a renewal was applied).
-
-**Scheduling (optional, Task Scheduler):**
-
-```bat
-/c ""<path/to/uv.exe>" tool run --refresh --from git+https://github.com/CITE-HMS/cite-cli cite notify-renewal > "%USERPROFILE%\.cite\logs\bootstrap.log" 2>&1"
-```
+| `--seed` | `False` | Record the current dongle state as the baseline without sending an email. Only needed to re-baseline explicitly — the baseline auto-seeds on first run. |
 
 **State file:** `%USERPROFILE%\.cite\last_notified_renewal.json` — written atomically; contains `hasp_id`, `expiration_date`, and `notified_at`.
 
 **Edge cases handled automatically:**
 
+- No baseline yet (fresh machine): seeds silently without sending an email.
 - HASP ID changed (dongle replaced): updates baseline silently without sending an email.
-- SMTP configured but delivery fails: tracking file is **not** updated, so the next scheduled run retries.
+- SMTP configured but delivery fails: tracking file is **not** updated, so the next run retries.
 - SMTP not configured: tracking file advances silently (no email, no error).
 
 ---

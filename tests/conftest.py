@@ -112,6 +112,17 @@ def _isolate_urgency_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.fixture(autouse=True)
+def _isolate_last_notified_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Redirect LAST_NOTIFIED_PATH so tests never touch $HOME — the renewal
+    detection in `cite renew` reads/writes it on every invocation."""
+    monkeypatch.setattr(
+        _renew, "LAST_NOTIFIED_PATH", tmp_path / "last_notified_renewal.json"
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_last_hasp_id_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Redirect LAST_HASP_ID_PATH so tests never touch ~/.cite/last_hasp_id.txt."""
     monkeypatch.setattr(_renew, "LAST_HASP_ID_PATH", tmp_path / "last_hasp_id.txt")

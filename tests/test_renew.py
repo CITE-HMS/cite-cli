@@ -6,6 +6,7 @@ import threading
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from typer.testing import CliRunner
@@ -1089,117 +1090,209 @@ def test_cli_renew_dry_run_does_not_generate(
     assert called["yes"] is False
 
 
-# --- combined renew (apply-first, then submit) -----------------------------
+# --- renewal detection inside `cite renew` ---------------------------------
 
 
-def test_cli_renew_runs_apply_phase_first(
-    mock_server, c2l_file: Path, tmp_state_path: Path, monkeypatch
-) -> None:
-    """By default `cite renew` calls apply_update() before the submit phase."""
-    from cite import cli
+class _FakeSMTP:
+    instances: ClassVar[list["_FakeSMTP"]] = []
 
-    call_order: list[str] = []
-    real_apply = cli.apply_update
+    def __init__(self, host, port, timeout=None):
+        self.sent = None
+        _FakeSMTP.instances.append(self)
 
-    def recording_apply(*args, **kwargs):
-        call_order.append("apply")
-        real_apply(*args, **kwargs)
+    def __enter__(self):
+        return self
 
-    monkeypatch.setattr(cli, "apply_update", recording_apply)
+    def __exit__(self, *exc):
+        pass
 
-    near = date.today() + timedelta(days=3)
-    monkeypatch.setattr(_renew, "get_license_info", _info_factory(near))
+    def starttls(self):
+        pass
 
-    result = runner.invoke(
+    def login(self, user, password):
+        pass
+
+    def send_message(self, msg):
+        self.sent = msg
+
+
+@pytest.fixture
+def fake_smtp(monkeypatch):
+    import smtplib
+
+    _FakeSMTP.instances = []
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSMTP)
+    return _FakeSMTP
+
+
+def _set_alert_creds(monkeypatch):
+    monkeypatch.setenv("CITE_ALERT_SMTP_USER", "sender@example.com")
+    monkeypatch.setenv("CITE_ALERT_SMTP_PASSWORD", "app-password")
+    monkeypatch.setenv("CITE_ALERT_TO", "team@example.com")
+
+
+def _invoke_renew(c2l_file: Path):
+    return runner.invoke(
         app,
         [
             "renew",
             "--email",
-            "combined@example.com",
+            "detect@example.com",
             "--full-name",
-            "Combined",
+            "Detect",
             "--c2l-file",
             str(c2l_file),
             "--url",
             "test",
         ],
     )
-    assert result.exit_code == 0, result.output
-    assert call_order == ["apply"]
-    assert "Submitted. HTTP 200" in result.output
 
 
-def test_cli_renew_no_apply_skips_apply_phase(
-    mock_server, c2l_file: Path, tmp_state_path: Path, monkeypatch
+def test_cli_renew_detects_renewal_sends_email_and_invites(
+    fake_smtp, c2l_file: Path, tmp_state_path: Path, tmp_last_notified_path, monkeypatch
 ) -> None:
-    """`--no-apply` skips the apply phase entirely."""
-    from cite import cli
+    """A manually-applied renewal is detected on the next daily run:
+    confirmation email + calendar invites go out, baseline advances."""
+    from cite._renew import save_last_notified
 
-    apply_called = {"yes": False}
-
-    def boom_if_called(*args, **kwargs):
-        apply_called["yes"] = True
-        raise AssertionError("apply_update should not be called when --no-apply")
-
-    monkeypatch.setattr(cli, "apply_update", boom_if_called)
-    monkeypatch.setattr(
-        _renew, "get_license_info", _info_factory(date.today() + timedelta(days=3))
+    _set_alert_creds(monkeypatch)
+    far = date.today() + timedelta(days=365)
+    save_last_notified(
+        LicenseInfo(expiration_date=date.today() + timedelta(days=10), hasp_id="123456")
     )
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(far, "123456"))
 
-    result = runner.invoke(
-        app,
-        [
-            "renew",
-            "--email",
-            "noapply@example.com",
-            "--full-name",
-            "NoApply",
-            "--c2l-file",
-            str(c2l_file),
-            "--url",
-            "test",
-            "--no-apply",
-        ],
-    )
+    result = _invoke_renew(c2l_file)
     assert result.exit_code == 0, result.output
-    assert apply_called["yes"] is False
-    assert "Submitted. HTTP 200" in result.output
+    assert "Renewal detected" in result.output
+    assert "Renewal confirmation email sent" in result.output
+    assert "Calendar reminder invites sent" in result.output
+    assert "No renewal needed" in result.output  # submit phase still ran
+    # Two emails: confirmation + calendar invite (with the ICS part).
+    assert len(fake_smtp.instances) == 2
+    invite = fake_smtp.instances[1].sent
+    assert "text/calendar" in invite.as_string()
+
+    # Second run: baseline already advanced -> no more emails.
+    result2 = _invoke_renew(c2l_file)
+    assert result2.exit_code == 0, result2.output
+    assert "Renewal detected" not in result2.output
+    assert len(fake_smtp.instances) == 2
 
 
-def test_cli_renew_continues_when_apply_phase_fails(
-    mock_server, c2l_file: Path, tmp_state_path: Path, monkeypatch
+def test_cli_renew_auto_seeds_baseline_without_email(
+    fake_smtp, c2l_file: Path, tmp_state_path: Path, tmp_last_notified_path, monkeypatch
 ) -> None:
-    """An apply-phase failure must NOT block the submit phase."""
-    import typer as _typer
+    """First run on a machine with no baseline: seed silently, no emails."""
+    from cite._renew import load_last_notified
 
-    from cite import cli
+    _set_alert_creds(monkeypatch)
+    far = date.today() + timedelta(days=365)
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(far, "123456"))
 
-    def failing_apply(*args, **kwargs):
-        # Simulate apply_update raising typer.Exit(1) after its own
-        # _alert_on_failure wrapper already dispatched the alert.
-        raise _typer.Exit(1)
-
-    monkeypatch.setattr(cli, "apply_update", failing_apply)
-
-    monkeypatch.setattr(
-        _renew, "get_license_info", _info_factory(date.today() + timedelta(days=3))
-    )
-
-    result = runner.invoke(
-        app,
-        [
-            "renew",
-            "--email",
-            "resilient@example.com",
-            "--full-name",
-            "Resilient",
-            "--c2l-file",
-            str(c2l_file),
-            "--url",
-            "test",
-        ],
-    )
+    result = _invoke_renew(c2l_file)
     assert result.exit_code == 0, result.output
-    assert "Apply phase failed" in result.output
-    assert "continuing to submit phase" in result.output.lower()
-    assert "Submitted. HTTP 200" in result.output
+    assert "baseline seeded" in result.output.lower()
+    assert fake_smtp.instances == []
+    baseline = load_last_notified()
+    assert baseline is not None
+    assert baseline.expiration_date == far
+
+
+def test_cli_renew_pending_submission_near_expiry_sends_urgency(
+    fake_smtp, c2l_file: Path, tmp_state_path: Path, tmp_last_notified_path, monkeypatch
+) -> None:
+    """Already-submitted + ≤4 days left -> urgency email fires from the
+    submit path (throttled by last_urgency_alert.json)."""
+    _set_alert_creds(monkeypatch)
+    near = date.today() + timedelta(days=2)
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(near, "159918744"))
+    # Seed the baseline so renewal detection is a no-op, and a pending
+    # submission for the same expiry so the dedup branch is taken.
+    _renew.save_last_notified(LicenseInfo(expiration_date=near, hasp_id="159918744"))
+    save_renew_state(
+        RenewState(
+            expiration_date=near,
+            hasp_id="159918744",
+            submitted_at=datetime.now(timezone.utc) - timedelta(days=10),
+            url=URL_ALIASES["test"],
+        )
+    )
+
+    result = _invoke_renew(c2l_file)
+    assert result.exit_code == 0, result.output
+    assert "Already submitted" in result.output
+    assert "URGENT alert email sent" in result.output
+    assert len(fake_smtp.instances) == 1
+    sent = fake_smtp.instances[0].sent
+    assert "URGENT" in sent["Subject"]
+
+    # Second run within the 20 h throttle window: no second email.
+    result2 = _invoke_renew(c2l_file)
+    assert result2.exit_code == 0, result2.output
+    assert len(fake_smtp.instances) == 1
+
+
+def test_cli_renew_detection_failure_dispatches_alert_and_skips_submit(
+    fake_smtp, c2l_file: Path, tmp_state_path: Path, tmp_last_notified_path, monkeypatch
+) -> None:
+    """An unexpected error during renewal detection (not the RuntimeError
+    that get_license_info raises for an unreachable ACC, which the
+    detection step already swallows) must still be caught by renew's
+    failure-alert wrapper, and must abort before the submit phase runs.
+
+    Regression test: the detection step used to run *before*
+    `_alert_on_failure`, so a failure there skipped both the alert email
+    and the submit phase silently.
+    """
+    _set_alert_creds(monkeypatch)
+    far = date.today() + timedelta(days=365)
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(far, "159918744"))
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    # No baseline yet -> auto-seed path -> save_last_notified is called.
+    monkeypatch.setattr(_renew, "save_last_notified", boom)
+
+    result = _invoke_renew(c2l_file)
+    assert result.exit_code == 1, result.output
+    assert "Failure alert email sent." in result.output
+    assert "Submitted" not in result.output
+    assert len(fake_smtp.instances) == 1
+    sent = fake_smtp.instances[0].sent
+    assert "renew failed" in sent["Subject"]
+    assert "disk full" in sent.get_content()
+
+
+def test_cli_renew_clears_stale_state_when_already_renewed(
+    fake_smtp, c2l_file: Path, tmp_state_path: Path, tmp_last_notified_path, monkeypatch
+) -> None:
+    """If the dongle's expiry already exceeds a pending renew_state.json
+    (i.e. the license was applied manually), `cite renew` must clear the
+    stale state so the next cycle starts cleanly rather than being stuck
+    on a submission that's already resolved."""
+    _set_alert_creds(monkeypatch)
+    far = date.today() + timedelta(days=365)
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(far, "159918744"))
+    # Baseline matches current (so renewal-detection is a no-op) but a
+    # stale pending submission exists for an older expiry.
+    _renew.save_last_notified(LicenseInfo(expiration_date=far, hasp_id="159918744"))
+    stale_exp = date.today() + timedelta(days=10)
+    save_renew_state(
+        RenewState(
+            expiration_date=stale_exp,
+            hasp_id="159918744",
+            submitted_at=datetime.now(timezone.utc) - timedelta(days=20),
+            url=URL_ALIASES["test"],
+        )
+    )
+    assert tmp_state_path.is_file()
+
+    result = _invoke_renew(c2l_file)
+    assert result.exit_code == 0, result.output
+    assert "Clearing stale pending state" in result.output
+    assert not tmp_state_path.is_file()
+    # No urgency nag either -- the stale submission was cleared before the
+    # submit-phase dedup check could treat it as still pending.
+    assert fake_smtp.instances == []

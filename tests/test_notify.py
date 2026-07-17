@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from typing import ClassVar
@@ -11,8 +11,17 @@ import pytest
 from typer.testing import CliRunner
 
 from cite import _notify, _renew
-from cite._notify import send_apply_success_email, send_failure_email
-from cite._renew import LicenseInfo, load_last_notified, save_last_notified
+from cite._notify import (
+    send_apply_success_email,
+    send_failure_email,
+    send_urgency_alert,
+)
+from cite._renew import (
+    LicenseInfo,
+    RenewState,
+    load_last_notified,
+    save_last_notified,
+)
 from cite.cli import app
 
 runner = CliRunner()
@@ -486,8 +495,8 @@ def test_send_apply_success_email_falls_back_to_hostname_when_unknown(
 # --- cite notify-renewal command ---
 
 
-def test_notify_renewal_no_baseline_exits_with_hint(
-    monkeypatch, tmp_last_notified_path: Path
+def test_notify_renewal_no_baseline_auto_seeds_without_email(
+    fake_smtp, monkeypatch, tmp_last_notified_path: Path
 ) -> None:
     monkeypatch.setattr(
         _renew,
@@ -495,8 +504,13 @@ def test_notify_renewal_no_baseline_exits_with_hint(
         lambda: LicenseInfo(expiration_date=date(2026, 8, 1), hasp_id="12345678"),
     )
     result = runner.invoke(app, ["notify-renewal"])
-    assert result.exit_code == 1
-    assert "--seed" in result.output
+    assert result.exit_code == 0, result.output
+    assert "seeded" in result.output
+    assert fake_smtp.instances == []
+    last = load_last_notified(tmp_last_notified_path)
+    assert last is not None
+    assert last.expiration_date == date(2026, 8, 1)
+    assert last.hasp_id == "12345678"
 
 
 def test_notify_renewal_seed_writes_baseline_no_email(
@@ -542,7 +556,13 @@ def test_notify_renewal_sends_when_expiry_advanced(
     result = runner.invoke(app, ["notify-renewal"])
     assert result.exit_code == 0, result.output
     assert "Renewal confirmation email sent" in result.output
-    assert len(fake_smtp.instances) == 1
+    assert "Calendar reminder invites sent" in result.output
+    # Two emails: the confirmation, then the calendar invite.
+    assert len(fake_smtp.instances) == 2
+    invite = fake_smtp.instances[1].sent
+    assert invite is not None
+    assert "Calendar reminders" in invite["Subject"]
+    assert "text/calendar" in invite.as_string()
     last = load_last_notified(tmp_last_notified_path)
     assert last is not None
     assert last.expiration_date == date(2027, 8, 1)
@@ -602,3 +622,69 @@ def test_notify_renewal_hasp_changed_seeds_without_email(
     last = load_last_notified(tmp_last_notified_path)
     assert last is not None
     assert last.hasp_id == "NEWID"
+
+
+# --- send_urgency_alert (moved from test_apply_update.py) -------------------
+
+
+def _make_state(days_until_exp: int) -> RenewState:
+    return RenewState(
+        expiration_date=date.today() + timedelta(days=days_until_exp),
+        hasp_id="159918744",
+        submitted_at=datetime.now(timezone.utc) - timedelta(days=12),
+        url="https://nis-e-update.nikon-instruments.jp/dealers/",
+    )
+
+
+def test_send_urgency_alert_sends(fake_smtp, monkeypatch) -> None:
+    _set_creds(monkeypatch)
+    state = _make_state(days_until_exp=3)
+    assert send_urgency_alert(state, days_remaining=3) is True
+    sent = fake_smtp.instances[0].sent
+    assert sent is not None
+    assert "URGENT" in sent["Subject"]
+    body = sent.get_content()
+    assert "09882A98" in body  # hex form
+    assert "159918744" in body  # decimal form too
+
+
+def test_send_urgency_alert_expired(fake_smtp, monkeypatch) -> None:
+    _set_creds(monkeypatch)
+    state = _make_state(days_until_exp=-2)
+    assert send_urgency_alert(state, days_remaining=-2) is True
+    sent = fake_smtp.instances[0].sent
+    assert sent is not None
+    text = sent["Subject"] + "\n" + sent.get_content()
+    assert "already expired" in text
+
+
+def test_send_urgency_alert_unconfigured_noop(fake_smtp) -> None:
+    state = _make_state(days_until_exp=3)
+    assert send_urgency_alert(state, days_remaining=3) is False
+    assert fake_smtp.instances == []
+
+
+def test_notify_renewal_calendar_invite_fails_but_confirmation_sent(
+    fake_smtp, monkeypatch, tmp_last_notified_path: Path
+) -> None:
+    """Confirmation email delivers but the calendar-invite send fails
+    (e.g. a second, flakier SMTP hiccup): must surface the failure, but
+    still advance the baseline since the confirmation itself succeeded."""
+    from cite import _calendar
+
+    _set_creds(monkeypatch)
+    old = LicenseInfo(expiration_date=date(2026, 8, 1), hasp_id="12345678")
+    new = LicenseInfo(expiration_date=date(2027, 8, 1), hasp_id="12345678")
+    save_last_notified(old, tmp_last_notified_path)
+    monkeypatch.setattr(_renew, "get_license_info", lambda: new)
+    monkeypatch.setattr(_calendar, "send_reminder_invites", lambda *a, **k: False)
+
+    result = runner.invoke(app, ["notify-renewal"])
+    assert result.exit_code == 0, result.output
+    assert "Renewal confirmation email sent" in result.output
+    assert "Calendar invite email failed to send" in result.output
+    # Only the confirmation email actually went out.
+    assert len(fake_smtp.instances) == 1
+    last = load_last_notified(tmp_last_notified_path)
+    assert last is not None
+    assert last.expiration_date == date(2027, 8, 1)
