@@ -1263,3 +1263,36 @@ def test_cli_renew_detection_failure_dispatches_alert_and_skips_submit(
     sent = fake_smtp.instances[0].sent
     assert "renew failed" in sent["Subject"]
     assert "disk full" in sent.get_content()
+
+
+def test_cli_renew_clears_stale_state_when_already_renewed(
+    fake_smtp, c2l_file: Path, tmp_state_path: Path, tmp_last_notified_path, monkeypatch
+) -> None:
+    """If the dongle's expiry already exceeds a pending renew_state.json
+    (i.e. the license was applied manually), `cite renew` must clear the
+    stale state so the next cycle starts cleanly rather than being stuck
+    on a submission that's already resolved."""
+    _set_alert_creds(monkeypatch)
+    far = date.today() + timedelta(days=365)
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(far, "159918744"))
+    # Baseline matches current (so renewal-detection is a no-op) but a
+    # stale pending submission exists for an older expiry.
+    _renew.save_last_notified(LicenseInfo(expiration_date=far, hasp_id="159918744"))
+    stale_exp = date.today() + timedelta(days=10)
+    save_renew_state(
+        RenewState(
+            expiration_date=stale_exp,
+            hasp_id="159918744",
+            submitted_at=datetime.now(timezone.utc) - timedelta(days=20),
+            url=URL_ALIASES["test"],
+        )
+    )
+    assert tmp_state_path.is_file()
+
+    result = _invoke_renew(c2l_file)
+    assert result.exit_code == 0, result.output
+    assert "Clearing stale pending state" in result.output
+    assert not tmp_state_path.is_file()
+    # No urgency nag either -- the stale submission was cleared before the
+    # submit-phase dedup check could treat it as still pending.
+    assert fake_smtp.instances == []
