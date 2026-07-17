@@ -30,8 +30,9 @@ DEFAULT_IMAP_PORT = 993
 # Mailboxes to search. "All Mail" is a superset of INBOX in Gmail, so
 # searching INBOX separately would double-fetch every message already in
 # the inbox (dedup by Message-ID prevents duplicates in results, but wastes
-# IMAP FETCH round-trips). Spam is included as a safety net.
-SEARCH_MAILBOXES = ('"[Gmail]/All Mail"', '"[Gmail]/Spam"')
+# IMAP FETCH round-trips). Gmail's "All Mail" excludes Spam and Trash by
+# design, so both are searched separately as a safety net.
+SEARCH_MAILBOXES = ('"[Gmail]/All Mail"', '"[Gmail]/Spam"', '"[Gmail]/Trash"')
 
 
 @dataclass(frozen=True)
@@ -98,7 +99,8 @@ def find_candidate_emails(
     port: int | None = None,
 ) -> list[CandidateEmail]:
     """Return every email matching the Nikon download-link regex since
-    `since`, across INBOX / All Mail / Spam, deduplicated by Message-ID.
+    `since`, across All Mail (which covers INBOX) / Spam / Trash,
+    deduplicated by Message-ID.
 
     Raises RuntimeError if credentials aren't configured or IMAP login
     fails. Returns an empty list if no matches.
