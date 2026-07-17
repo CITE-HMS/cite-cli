@@ -1231,3 +1231,35 @@ def test_cli_renew_pending_submission_near_expiry_sends_urgency(
     result2 = _invoke_renew(c2l_file)
     assert result2.exit_code == 0, result2.output
     assert len(fake_smtp.instances) == 1
+
+
+def test_cli_renew_detection_failure_dispatches_alert_and_skips_submit(
+    fake_smtp, c2l_file: Path, tmp_state_path: Path, tmp_last_notified_path, monkeypatch
+) -> None:
+    """An unexpected error during renewal detection (not the RuntimeError
+    that get_license_info raises for an unreachable ACC, which the
+    detection step already swallows) must still be caught by renew's
+    failure-alert wrapper, and must abort before the submit phase runs.
+
+    Regression test: the detection step used to run *before*
+    `_alert_on_failure`, so a failure there skipped both the alert email
+    and the submit phase silently.
+    """
+    _set_alert_creds(monkeypatch)
+    far = date.today() + timedelta(days=365)
+    monkeypatch.setattr(_renew, "get_license_info", _info_factory(far, "159918744"))
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    # No baseline yet -> auto-seed path -> save_last_notified is called.
+    monkeypatch.setattr(_renew, "save_last_notified", boom)
+
+    result = _invoke_renew(c2l_file)
+    assert result.exit_code == 1, result.output
+    assert "Failure alert email sent." in result.output
+    assert "Submitted" not in result.output
+    assert len(fake_smtp.instances) == 1
+    sent = fake_smtp.instances[0].sent
+    assert "renew failed" in sent["Subject"]
+    assert "disk full" in sent.get_content()
