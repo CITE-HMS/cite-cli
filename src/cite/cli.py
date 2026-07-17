@@ -426,51 +426,32 @@ def renew(
         "--force",
         help="Submit even if the license is not within the renewal window.",
     ),
-    no_apply: bool = typer.Option(
-        False,
-        "--no-apply",
-        help="Skip the apply phase (poll Gmail for Nikon's reply and apply "
-        "the .l2c). By default `cite renew` runs apply first, then submit; "
-        "use this for testing the submit phase in isolation.",
-    ),
 ) -> None:
-    """Run the renewal cycle: apply Nikon's reply if pending, then submit if needed.
+    """Monitor the license and submit a renewal request to Nikon when due.
 
-    A daily `cite renew` does both halves of the loop:
+    A daily `cite renew` does the following:
 
-    1. Apply phase (skip with `--no-apply`): if `~/.cite/renew_state.json`
-       exists, poll Gmail for Nikon's `.l2c` reply and apply it via
-       `nis_hasp_update.exe -a`. Detects and clears stale state if the
-       license was already renewed manually. Sends an URGENT email (at most
-       once per 20 h) if the license is ≤4 days from expiry and no reply
-       has arrived yet.
+    1. Detect a completed renewal: if the dongle's expiration advanced
+       since the last baseline (i.e. an update was applied manually), send
+       the confirmation email plus Google-Calendar reminder invites for
+       the new expiration date, and clear any stale pending state.
 
     2. Submit phase: read the dongle's expiration via ACC, check the
        renewal window, dedup against any prior submission, and POST a fresh
-       `.c2l` to Nikon if needed.
+       `.c2l` to Nikon if needed. While a submission is pending and the
+       license is within 4 days of expiry, sends an URGENT reminder email
+       (at most once per 20 h) to apply Nikon's reply manually.
 
-    The two phases are independent — a failure in one does not block the
-    other; each dispatches its own failure alert.
+    Applying Nikon's reply is a manual step: download the .l2c from the
+    link in Nikon's email and apply it on the station via the HASP Update
+    GUI (nis_hasp_update.exe). The next daily run detects the new
+    expiration date and sends the confirmation + calendar invites.
     """
-    # Pre-check: if a pending state exists and the dongle's expiry already exceeds
-    # it, the license was renewed manually. Clear the stale state before the
-    # apply phase so it doesn't fire urgency alerts or attempt re-applies.
+    # Detect a manual renewal first: send confirmation + calendar invites
+    # if the expiration advanced, and clear stale pending state so the
+    # submit phase can start the next cycle cleanly.
+    _check_and_notify_renewal(auto_seed=True)
     _clear_stale_renew_state_if_renewed()
-
-    # Phase 1: try to apply any pending Nikon reply. Failures in this
-    # phase trigger their own alert email (via apply-update's wrapper) and
-    # do NOT block the submit phase.
-    if not no_apply:
-        try:
-            apply_update(dry_run=dry_run)
-        except typer.Exit as e:
-            if e.exit_code:
-                typer.secho(
-                    f"{_ts()}Apply phase failed (alert dispatched if "
-                    f"configured). Continuing to submit phase.",
-                    fg="yellow",
-                    err=True,
-                )
 
     with _alert_on_failure("renew"):
         from cite._renew import (
@@ -532,6 +513,11 @@ def renew(
                     f"rerun with --force to resubmit.",
                     fg="yellow",
                 )
+                # Submission pending but not applied yet: nag (throttled to
+                # one email per 20 h) when expiry is imminent.
+                from cite._notify import send_urgency_alert
+
+                _maybe_send_urgency(state, send_urgency_alert)
                 return
 
         if c2l_path is None and not dry_run:
@@ -665,382 +651,117 @@ def request_file(
     )
 
 
-@app.command("apply-update")
-def apply_update(
-    dry_run: bool = typer.Option(
-        False,
-        "-n",
-        "--dry-run",
-        help="Poll IMAP, download candidate .l2c files into a tmp dir, and "
-        "report what was found — but do NOT call nis_hasp_update.exe, "
-        "do NOT write state, do NOT touch the production cache. Useful "
-        "for verifying inbox + download on any platform (Mac / Linux), "
-        "without a HASP dongle present.",
-    ),
-) -> None:
-    """Poll Gmail for Nikon's .l2c reply, verify, and apply it to the HASP dongle.
+def _check_and_notify_renewal(*, auto_seed: bool, strict: bool = False) -> None:
+    """Detect an applied renewal (dongle expiry advanced past the baseline)
+    and send the confirmation email + calendar reminder invites.
 
-    Daily-schedulable. No-ops cleanly when there's no pending renewal,
-    or no reply yet. Sends an URGENT email if the license is within 4
-    days of expiration and no reply has arrived.
+    Shared by `cite renew` (every daily run, non-strict) and the
+    `notify-renewal` command (strict: ACC/SMTP failures exit non-zero).
+    Non-strict mode never raises, so a hiccup here cannot block the submit
+    phase. The baseline is only updated once the confirmation email is
+    delivered (or SMTP is unconfigured), so failed sends retry next run.
     """
-    import shutil
-
-    from cite._email import find_candidate_emails
-    from cite._notify import send_apply_success_email, send_urgency_alert
+    from cite._calendar import send_reminder_invites
+    from cite._notify import _is_configured, send_apply_success_email
     from cite._renew import (
-        APPLIED_L2C_DIR,
-        APPLY_PHASE_DISABLED_HASP_IDS,
-        INCOMING_DIR,
-        RECEIVED_L2C_PATH,
-        RENEW_STATE_PATH,
-        apply_l2c,
-        download_l2c,
-        extract_haspid_from_l2c_content,
-        extract_haspid_from_l2c_filename,
         get_license_info,
-        load_checked_emails,
-        load_renew_state,
-        save_checked_emails,
+        hasp_id_to_hex,
+        hasp_id_to_station,
+        load_last_notified,
         save_last_notified,
     )
 
-    if dry_run:
-        _apply_update_dry_run(
-            find_candidate_emails,
-            download_l2c,
-            extract_haspid_from_l2c_filename,
-            extract_haspid_from_l2c_content,
-            load_renew_state,
+    try:
+        current = get_license_info()
+    except RuntimeError as e:
+        if strict:
+            typer.secho(f"{_ts()}{e}", fg="red", err=True)
+            raise typer.Exit(1) from e
+        return
+
+    last = load_last_notified()
+    if last is None:
+        if not auto_seed:
+            typer.secho(
+                f"{_ts()}No notification baseline found. Run "
+                "`cite notify-renewal --seed` once to initialise "
+                "(records the current expiry without sending an email).",
+                fg="yellow",
+                err=True,
+            )
+            raise typer.Exit(1)
+        save_last_notified(current)
+        typer.secho(
+            f"{_ts()}Notification baseline seeded: HASP {current.hasp_id}, "
+            f"expires {current.expiration_date.isoformat()}.",
+            fg="green",
         )
         return
 
-    with _alert_on_failure("apply-update"):
-        # 1. Pre-check state
-        state = load_renew_state()
-        if state is None:
+    if last.hasp_id != current.hasp_id:
+        typer.secho(
+            f"{_ts()}HASP ID changed ({last.hasp_id} → {current.hasp_id}). "
+            "Updating baseline without sending an email.",
+            fg="yellow",
+        )
+        save_last_notified(current)
+        return
+
+    if current.expiration_date <= last.expiration_date:
+        if strict:
             typer.secho(
-                f"{_ts()}Nothing to apply (no pending renewal on this PC).",
+                f"{_ts()}Already notified about "
+                f"{last.expiration_date.isoformat()}; no-op.",
                 fg="green",
             )
-            return
-
-        if hasp_id_to_hex(state.hasp_id) in APPLY_PHASE_DISABLED_HASP_IDS:
-            station = hasp_id_to_station(state.hasp_id) or state.hasp_id
-            typer.secho(
-                f"{_ts()}Apply phase temporarily disabled for {station} "
-                "(known IMAP network block on this station's network). "
-                "Skipping IMAP poll — check Gmail manually for Nikon's reply.",
-                fg="yellow",
-            )
-            return
-
-        # 2. Poll IMAP for candidates
-        typer.secho(
-            f"{_ts()}Polling Gmail for replies since "
-            f"{state.submitted_at.date().isoformat()} ...",
-            fg="bright_blue",
-        )
-        try:
-            candidates = find_candidate_emails(since=state.submitted_at)
-        except RuntimeError as e:
-            typer.secho(f"{_ts()}{e}", fg="red", err=True)
-            raise typer.Exit(1) from e
-
-        if not candidates:
-            _maybe_send_urgency(state, send_urgency_alert)
-            typer.secho(
-                f"{_ts()}No Nikon reply found yet.",
-                fg="yellow",
-            )
-            return
-
-        # 3. Per-candidate triage (load cache, download new ones, parse HASPID
-        #    from the Content-Disposition filename Nikon serves).
-        cache = load_checked_emails()
-        tmp_files: dict[str, Path] = {}
-        for cand in candidates:
-            if cand.message_id in cache:
-                continue
-            typer.secho(
-                f"{_ts()}Downloading candidate from {cand.sender} "
-                f"(token={cand.request_token[:8]}...) ...",
-                fg=(140, 140, 140),
-            )
-            try:
-                saved_path, saved_name = download_l2c(cand.download_url, INCOMING_DIR)
-            except RuntimeError as e:
-                typer.secho(f"{_ts()}Skipping candidate ({e})", fg="yellow", err=True)
-                continue
-            try:
-                haspid = extract_haspid_from_l2c_filename(saved_name)
-            except RuntimeError:
-                # Filename didn't match Nikon's `<HEX>.l2c` convention;
-                # fall back to parsing file contents before giving up.
-                try:
-                    haspid = extract_haspid_from_l2c_content(saved_path)
-                except RuntimeError as e2:
-                    typer.secho(
-                        f"{_ts()}Skipping candidate ({e2})",
-                        fg="yellow",
-                        err=True,
-                    )
-                    saved_path.unlink(missing_ok=True)
-                    continue
-            cache[cand.message_id] = {
-                "haspid": haspid,
-                "checked_at": datetime.now(timezone.utc).isoformat(),
-            }
-            tmp_files[cand.message_id] = saved_path
-
-        save_checked_emails(cache)
-
-        # 4. Filter for this PC
-        matching = [
-            cand
-            for cand in candidates
-            if cache.get(cand.message_id, {}).get("haspid") == state.hasp_id
-        ]
-
-        if not matching:
-            for tmp_path in tmp_files.values():
-                tmp_path.unlink(missing_ok=True)
-            _maybe_send_urgency(state, send_urgency_alert)
-            typer.secho(
-                f"{_ts()}No reply for this dongle yet "
-                f"(hasp_id={state.hasp_id}; checked {len(candidates)} "
-                f"candidate(s) from the shared inbox).",
-                fg="yellow",
-            )
-            return
-
-        winner = matching[0]  # sorted newest-first by find_candidate_emails
-
-        # Delete non-winner downloads now — they are never needed again and
-        # would otherwise linger in INCOMING_DIR if the process exits early.
-        for _mid, _tmp in tmp_files.items():
-            if _mid != winner.message_id:
-                _tmp.unlink(missing_ok=True)
-
-        # 5. Promote and verify (defense-in-depth: re-check HASPID from
-        #    filename AND from file contents before applying).
-        src = tmp_files.get(winner.message_id)
-        if src is not None:
-            RECEIVED_L2C_PATH.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(RECEIVED_L2C_PATH))
-            verify_name = src.name
-        elif RECEIVED_L2C_PATH.is_file():
-            # The winner was already in the checked-emails cache (downloaded
-            # and staged in a prior run that failed during apply_l2c). Reuse
-            # the file that was left at RECEIVED_L2C_PATH rather than
-            # crashing with "Internal error".
-            typer.secho(
-                f"{_ts()}Reusing previously staged {RECEIVED_L2C_PATH.name}.",
-                fg="bright_blue",
-            )
-            verify_name = RECEIVED_L2C_PATH.name
-        else:
-            # The winner's file is no longer staged locally (e.g. deleted between
-            # runs). Evict it from the cache so the next run re-downloads it.
-            cache.pop(winner.message_id, None)
-            save_checked_emails(cache)
-            typer.secho(
-                f"{_ts()}Staged .l2c for winner is missing — removed from cache. "
-                "Will re-download on the next run.",
-                fg="yellow",
-                err=True,
-            )
-            raise typer.Exit(1)
-        try:
-            verified_haspid = extract_haspid_from_l2c_filename(verify_name)
-        except RuntimeError:
-            verified_haspid = extract_haspid_from_l2c_content(RECEIVED_L2C_PATH)
-        if verified_haspid != state.hasp_id:
-            typer.secho(
-                f"{_ts()}HASP ID re-verify failed: file has "
-                f"{verified_haspid}, expected {state.hasp_id}.",
-                fg="red",
-                err=True,
-            )
-            raise typer.Exit(1)
-
-        # 6. Apply
-        before = get_license_info(hasp_id=state.hasp_id)
-        typer.secho(
-            f"{_ts()}Applying .l2c via nis_hasp_update.exe -a ...",
-            fg="bright_blue",
-        )
-        try:
-            after = apply_l2c(RECEIVED_L2C_PATH, before=before)
-        except RuntimeError as e:
-            typer.secho(f"{_ts()}{e}", fg="red", err=True)
-            # Evict the winner from cache and delete the staged file so the
-            # next run re-downloads rather than retrying the same bad file.
-            cache.pop(winner.message_id, None)
-            save_checked_emails(cache)
-            RECEIVED_L2C_PATH.unlink(missing_ok=True)
-            raise typer.Exit(1) from e
-
-        typer.secho(
-            f"{_ts()}Applied. Expiration {before.expiration_date.isoformat()} "
-            f"-> {after.expiration_date.isoformat()}.",
-            fg="green",
-            bold=True,
-        )
-
-        if send_apply_success_email(before, after):
-            typer.secho(f"{_ts()}Renewal confirmation email sent.", fg="green")
-        save_last_notified(after)
-
-        # 7. Archive and clean up
-        APPLIED_L2C_DIR.mkdir(parents=True, exist_ok=True)
-        hasp_hex = hasp_id_to_hex(state.hasp_id)
-        archive_path = (
-            APPLIED_L2C_DIR / f"{hasp_hex}_{before.expiration_date.isoformat()}_to_"
-            f"{after.expiration_date.isoformat()}.l2c"
-        )
-        shutil.move(str(RECEIVED_L2C_PATH), str(archive_path))
-        for tmp_path in tmp_files.values():
-            tmp_path.unlink(missing_ok=True)
-
-        # Mark the applied message-id in the cache so we never reprocess it.
-        cache[winner.message_id] = {
-            "haspid": state.hasp_id,
-            "checked_at": datetime.now(timezone.utc).isoformat(),
-        }
-        save_checked_emails(cache)
-
-        # 8. Delete the renew state — cycle complete.
-        RENEW_STATE_PATH.unlink(missing_ok=True)
-        typer.secho(
-            f"{_ts()}Cycle complete. Archived to {archive_path}.",
-            fg="green",
-            bold=True,
-        )
-
-
-def _apply_update_dry_run(  # type: ignore[no-untyped-def]
-    find_candidate_emails,
-    download_l2c,
-    extract_haspid_from_l2c_filename,
-    extract_haspid_from_l2c_content,
-    load_renew_state,
-) -> None:
-    """Diagnostic run: poll IMAP, download candidates, report HASP IDs.
-
-    Cross-platform (no nis_hasp_update.exe needed, no HASP dongle needed,
-    no production state touched). Useful for verifying the
-    inbox-polling + download pipeline on a Mac before deploying to the
-    Windows machines.
-    """
-    import tempfile
-    from datetime import datetime as _dt
-    from datetime import timedelta, timezone
-
-    state = load_renew_state()
-    if state is None:
-        typer.secho(
-            f"{_ts()}DRY RUN: no renew_state.json on this machine — "
-            "running in pure-diagnostic mode. No HASP-ID match column "
-            "will be shown.",
-            fg=(140, 140, 140),
-        )
-        since = _dt.now(tz=timezone.utc) - timedelta(days=90)
-    else:
-        typer.secho(
-            f"{_ts()}DRY RUN: searching since "
-            f"{state.submitted_at.date().isoformat()}; will mark candidate "
-            f"matching hasp_id={state.hasp_id} (hex "
-            f"{hasp_id_to_hex(state.hasp_id)}).",
-            fg=(140, 140, 140),
-        )
-        since = state.submitted_at
-
-    try:
-        candidates = find_candidate_emails(since=since)
-    except RuntimeError as e:
-        typer.secho(f"{_ts()}{e}", fg="red", err=True)
-        raise typer.Exit(1) from e
-
-    if not candidates:
-        typer.secho(f"{_ts()}No candidate emails found.", fg="yellow", bold=True)
         return
 
+    # Expiration advanced — a renewal was applied (manually or via --apply).
     typer.secho(
-        f"{_ts()}Found {len(candidates)} candidate email(s).",
-        fg="bright_blue",
-        bold=True,
-    )
-
-    expected_id = state.hasp_id if state is not None else None
-    tmp_dir = Path(tempfile.mkdtemp(prefix="cite-apply-dryrun-"))
-    typer.secho(
-        f"{_ts()}Downloading into {tmp_dir} (you can delete this after).",
-        fg=(140, 140, 140),
-    )
-
-    try:
-        for i, cand in enumerate(candidates, 1):
-            typer.echo("")
-            typer.secho(f"  ┌─ #{i}", fg="bright_blue", bold=True)
-            typer.echo(f"  │  From:     {cand.sender}")
-            typer.echo(f"  │  Sent:     {cand.sent_at.isoformat()}")
-            typer.echo(f"  │  Token:    {cand.request_token}")
-            typer.echo(f"  │  URL:      {cand.download_url}")
-            try:
-                saved_path, saved_name = download_l2c(cand.download_url, tmp_dir)
-            except RuntimeError as e:
-                typer.secho(
-                    f"  │  ERROR:    download failed ({e})",
-                    fg="red",
-                )
-                typer.secho("  └─", fg="bright_blue", bold=True)
-                continue
-            size = saved_path.stat().st_size
-            typer.echo(f"  │  File:     {saved_name} ({size:,} bytes)")
-            try:
-                haspid = extract_haspid_from_l2c_filename(saved_name)
-                src = "filename"
-            except RuntimeError:
-                try:
-                    haspid = extract_haspid_from_l2c_content(saved_path)
-                    src = "file content"
-                except RuntimeError as e:
-                    typer.secho(
-                        f"  │  ERROR:    HASP ID could not be parsed ({e})",
-                        fg="red",
-                    )
-                    typer.secho("  └─", fg="bright_blue", bold=True)
-                    continue
-            try:
-                hex_form = f"{int(haspid):08X}"
-            except ValueError:
-                hex_form = "?"
-            typer.echo(f"  │  HASPID:   {haspid} (hex {hex_form}) [parsed from {src}]")
-            if expected_id is not None:
-                if haspid == expected_id:
-                    typer.secho(
-                        "  │  Match:    YES — this would be applied if not --dry-run",
-                        fg="green",
-                        bold=True,
-                    )
-                else:
-                    typer.secho(
-                        "  │  Match:    no (different PC's reply)",
-                        fg=(140, 140, 140),
-                    )
-            typer.secho("  └─", fg="bright_blue", bold=True)
-    finally:
-        # Leave the downloaded files in place so the user can inspect them;
-        # they're in a tmp dir so OS cleanup handles them eventually. The
-        # path was printed above.
-        pass
-
-    typer.echo("")
-    typer.secho(
-        f"{_ts()}DRY RUN complete. Nothing was applied or persisted.",
+        f"{_ts()}Renewal detected: {last.expiration_date.isoformat()} → "
+        f"{current.expiration_date.isoformat()}.",
         fg="green",
         bold=True,
+    )
+    configured = _is_configured()
+    sent = send_apply_success_email(before=last, after=current)
+    if sent:
+        typer.secho(f"{_ts()}Renewal confirmation email sent.", fg="green")
+        if send_reminder_invites(
+            station=hasp_id_to_station(current.hasp_id),
+            hasp_hex=hasp_id_to_hex(current.hasp_id),
+            expiry=current.expiration_date,
+        ):
+            typer.secho(
+                f"{_ts()}Calendar reminder invites sent "
+                f"(14 d / 7 d / day-of {current.expiration_date.isoformat()}).",
+                fg="green",
+            )
+        else:
+            typer.secho(
+                f"{_ts()}Calendar invite email failed to send.",
+                fg="yellow",
+                err=True,
+            )
+    elif configured:
+        # Configured but SMTP failed — leave baseline unchanged so next run
+        # retries the whole notification.
+        typer.secho(
+            f"{_ts()}SMTP error: renewal confirmation email not sent. "
+            "Tracking file not updated; will retry on next run.",
+            fg="yellow",
+            err=True,
+        )
+        if strict:
+            raise typer.Exit(1)
+        return
+    else:
+        typer.secho(f"{_ts()}SMTP not configured; skipping email.", fg="yellow")
+
+    save_last_notified(current)
+    typer.secho(
+        f"{_ts()}Tracking file updated: {current.expiration_date.isoformat()}.",
+        fg="green",
     )
 
 
@@ -1111,28 +832,22 @@ def notify_renewal(
         "without sending an email. Run once on a freshly-set-up machine.",
     ),
 ) -> None:
-    """Send the renewal-confirmation email if the dongle's expiration has
-    advanced since the last notification. Idempotent: re-running with no
-    change is a no-op.
+    """Send the renewal-confirmation email + calendar reminder invites if the
+    dongle's expiration has advanced since the last notification.
+    Idempotent: re-running with no change is a no-op.
 
-    Useful when a license was applied manually via Nikon's HASP Update GUI
-    rather than through `cite apply-update`.
+    The same check runs automatically on every `cite renew`; this command
+    exists for manual/one-off use.
     """
-    from cite._notify import _is_configured, send_apply_success_email
-    from cite._renew import (
-        get_license_info,
-        load_last_notified,
-        save_last_notified,
-    )
+    from cite._renew import get_license_info, save_last_notified
 
     with _alert_on_failure("notify-renewal"):
-        try:
-            current = get_license_info()
-        except RuntimeError as e:
-            typer.secho(f"{_ts()}{e}", fg="red", err=True)
-            raise typer.Exit(1) from e
-
         if seed:
+            try:
+                current = get_license_info()
+            except RuntimeError as e:
+                typer.secho(f"{_ts()}{e}", fg="red", err=True)
+                raise typer.Exit(1) from e
             save_last_notified(current)
             typer.secho(
                 f"{_ts()}Baseline set: HASP {current.hasp_id}, "
@@ -1142,61 +857,7 @@ def notify_renewal(
             )
             return
 
-        last = load_last_notified()
-        if last is None:
-            typer.secho(
-                f"{_ts()}No notification baseline found. Run "
-                "`cite notify-renewal --seed` once to initialise "
-                "(records the current expiry without sending an email).",
-                fg="yellow",
-                err=True,
-            )
-            raise typer.Exit(1)
-
-        if last.hasp_id != current.hasp_id:
-            typer.secho(
-                f"{_ts()}HASP ID changed ({last.hasp_id} → {current.hasp_id}). "
-                "Updating baseline without sending an email.",
-                fg="yellow",
-            )
-            save_last_notified(current)
-            return
-
-        if current.expiration_date <= last.expiration_date:
-            typer.secho(
-                f"{_ts()}Already notified about "
-                f"{last.expiration_date.isoformat()}; no-op.",
-                fg="green",
-            )
-            return
-
-        # Expiration has advanced — send the confirmation email.
-        configured = _is_configured()
-        sent = send_apply_success_email(before=last, after=current)
-        if sent:
-            typer.secho(f"{_ts()}Renewal confirmation email sent.", fg="green")
-        elif configured:
-            # Configured but SMTP failed — leave tracking unchanged so next run retries.
-            typer.secho(
-                f"{_ts()}SMTP error: renewal confirmation email not sent. "
-                "Tracking file not updated; will retry on next run.",
-                fg="yellow",
-                err=True,
-            )
-            raise typer.Exit(1)
-        else:
-            typer.secho(
-                f"{_ts()}SMTP not configured; skipping email.",
-                fg="yellow",
-            )
-
-        # Update tracking only when email delivered or SMTP not configured.
-        if sent or not configured:
-            save_last_notified(current)
-            typer.secho(
-                f"{_ts()}Tracking file updated: {current.expiration_date.isoformat()}.",
-                fg="green",
-            )
+        _check_and_notify_renewal(auto_seed=True, strict=True)
 
 
 @app.command("test-alert")

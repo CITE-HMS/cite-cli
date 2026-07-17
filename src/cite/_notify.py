@@ -149,8 +149,9 @@ def send_urgency_alert(state: RenewState, days_remaining: int) -> bool:
         f"Action required:\n"
         f"  1. Check the citeathms@gmail.com inbox for a reply from\n"
         f"     Nikon containing a dealers/download.php?request=... link.\n"
-        f"  2. If found, save the .v2c file and apply it manually on\n"
-        f"     {hostname} via HASP Update (or `cite apply-update`).\n"
+        f"  2. If found, download the .l2c file from that link and apply\n"
+        f"     it manually on {hostname} via the HASP Update GUI\n"
+        f"     (nis_hasp_update.exe).\n"
         f"  3. If no reply has arrived, contact Nikon support and quote\n"
         f"     the HASP ID above.\n"
     )
@@ -166,7 +167,7 @@ def send_urgency_alert(state: RenewState, days_remaining: int) -> bool:
 
 
 def send_apply_success_email(before: LicenseInfo, after: LicenseInfo) -> bool:
-    """Send a confirmation email after apply-update successfully applies a .l2c.
+    """Send a confirmation email after a license renewal is detected.
 
     Returns True if delivered, False if not configured or SMTP failed. Never raises.
     """
