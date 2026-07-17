@@ -78,6 +78,7 @@ HASP_ID_TO_STATIONS_MAP: dict[str, str] = {
 APPLY_PHASE_DISABLED_HASP_IDS: set[str] = {
     "3B8C0A7D",  # Station 3 (Dongle 202137)
     "22B5229C",  # Station 8 (Dongle 202141)
+    "42E55C92",  # Station 9 (Dongle 202142)
     "1F5B4CB0",  # Station 15 (Dongle 202138)
 }
 
