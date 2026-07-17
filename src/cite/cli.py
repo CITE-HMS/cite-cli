@@ -700,7 +700,7 @@ def _check_and_notify_renewal(*, auto_seed: bool, strict: bool = False) -> None:
 
     if last.hasp_id != current.hasp_id:
         typer.secho(
-            f"{_ts()}HASP ID changed ({last.hasp_id} → {current.hasp_id}). "
+            f"{_ts()}HASP ID changed ({last.hasp_id} -> {current.hasp_id}). "
             "Updating baseline without sending an email.",
             fg="yellow",
         )
@@ -718,7 +718,7 @@ def _check_and_notify_renewal(*, auto_seed: bool, strict: bool = False) -> None:
 
     # Expiration advanced — a renewal was applied (manually or via --apply).
     typer.secho(
-        f"{_ts()}Renewal detected: {last.expiration_date.isoformat()} → "
+        f"{_ts()}Renewal detected: {last.expiration_date.isoformat()} -> "
         f"{current.expiration_date.isoformat()}.",
         fg="green",
         bold=True,
@@ -784,7 +784,7 @@ def _clear_stale_renew_state_if_renewed() -> None:
     if current.expiration_date > state.expiration_date:
         typer.secho(
             f"{_ts()}License already renewed "
-            f"({state.expiration_date.isoformat()} → "
+            f"({state.expiration_date.isoformat()} -> "
             f"{current.expiration_date.isoformat()}). "
             "Clearing stale pending state.",
             fg="green",

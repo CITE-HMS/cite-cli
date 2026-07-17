@@ -44,6 +44,19 @@ class _Tee:
 
     def write(self, s: str) -> int:
         self._log.write(_ANSI_RE.sub("", s))
+
+        # A scheduled task on Windows can expose stdout/stderr as a legacy
+        # code-page stream (commonly cp1252) rather than a Unicode-capable
+        # console.  Keep the UTF-8 log intact, but make terminal output safe
+        # for that stream so a status message can never crash the command.
+        encoding = getattr(self._stream, "encoding", None)
+        errors = getattr(self._stream, "errors", None) or "strict"
+        if encoding is not None:
+            try:
+                s.encode(encoding, errors=errors)
+            except (LookupError, UnicodeEncodeError):
+                s = s.encode(encoding, errors="replace").decode(encoding)
+
         return self._stream.write(s)  # type: ignore[no-any-return]
 
     def flush(self) -> None:

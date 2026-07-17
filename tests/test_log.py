@@ -53,6 +53,37 @@ def test_tee_strips_ansi_from_log_file(tmp_path: Path) -> None:
     assert "coloured plain" in log_content
 
 
+def test_tee_handles_unicode_with_legacy_windows_encoding(tmp_path: Path) -> None:
+    """Unicode status output must not crash a cp1252 scheduled task."""
+    import io
+
+    class Cp1252Stream:
+        encoding = "cp1252"
+        errors = "strict"
+
+        def __init__(self) -> None:
+            self.buffer = io.BytesIO()
+
+        def write(self, text: str) -> int:
+            self.buffer.write(text.encode(self.encoding, errors=self.errors))
+            return len(text)
+
+        def flush(self) -> None:
+            pass
+
+    log_file = tmp_path / "unicode.log"
+    terminal = Cp1252Stream()
+    with log_file.open("w", encoding="utf-8") as lf:
+        tee = _Tee(terminal, lf)
+        tee.write("Renewal detected: 2026-01-01 → 2027-01-01.\n")
+        tee.flush()
+
+    assert terminal.buffer.getvalue().decode("cp1252") == (
+        "Renewal detected: 2026-01-01 ? 2027-01-01.\n"
+    )
+    assert "2026-01-01 → 2027-01-01" in log_file.read_text(encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # init_logging
 # ---------------------------------------------------------------------------
