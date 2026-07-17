@@ -1148,11 +1148,11 @@ def _invoke_renew(c2l_file: Path):
     )
 
 
-def test_cli_renew_detects_renewal_sends_email_and_invites(
+def test_cli_renew_detects_renewal_and_sends_confirmation_email(
     fake_smtp, c2l_file: Path, tmp_state_path: Path, tmp_last_notified_path, monkeypatch
 ) -> None:
     """A manually-applied renewal is detected on the next daily run:
-    confirmation email + calendar invites go out, baseline advances."""
+    the confirmation email goes out and the baseline advances."""
     from cite._renew import save_last_notified
 
     _set_alert_creds(monkeypatch)
@@ -1166,18 +1166,18 @@ def test_cli_renew_detects_renewal_sends_email_and_invites(
     assert result.exit_code == 0, result.output
     assert "Renewal detected" in result.output
     assert "Renewal confirmation email sent" in result.output
-    assert "Calendar reminder invite sent" in result.output
     assert "No renewal needed" in result.output  # submit phase still ran
-    # Two emails: confirmation + calendar invite (with the ICS part).
-    assert len(fake_smtp.instances) == 2
-    invite = fake_smtp.instances[1].sent
-    assert "text/calendar" in invite.as_string()
+    assert len(fake_smtp.instances) == 1
+    confirmation = fake_smtp.instances[0].sent
+    assert confirmation is not None
+    assert "NIS-Elements license renewed" in confirmation["Subject"]
+    assert "text/calendar" not in confirmation.as_string()
 
     # Second run: baseline already advanced -> no more emails.
     result2 = _invoke_renew(c2l_file)
     assert result2.exit_code == 0, result2.output
     assert "Renewal detected" not in result2.output
-    assert len(fake_smtp.instances) == 2
+    assert len(fake_smtp.instances) == 1
 
 
 def test_cli_renew_auto_seeds_baseline_without_email(

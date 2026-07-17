@@ -15,7 +15,7 @@ This section covers everything needed to schedule `cite` commands unattended on 
 | Task | Purpose |
 |---|---|
 | `cite clean` | Delete old files on a schedule |
-| `cite renew` | Monitor the license, submit renewal requests to Nikon, and detect applied renewals (confirmation email + Google-Calendar reminders) |
+| `cite renew` | Monitor the license, submit renewal requests to Nikon, and send a confirmation email when a renewal is detected (consumed by `scripts/sheet_tracker.gs` for the tracking Sheet + Google-Calendar reminders) |
 
 Applying Nikon's reply is a **manual step**: download the `.l2c` from the link in Nikon's email and apply it on the station via the HASP Update GUI (`nis_hasp_update.exe`). The next daily `cite renew` run detects the new expiration date automatically.
 
@@ -129,7 +129,7 @@ To clean a specific directory instead of the defaults, add the path as the first
 
 Runs the renewal loop daily. **One Task Scheduler entry per machine** covers everything:
 
-**Step 1 — detect a completed renewal:** if the dongle's expiration advanced since the last recorded baseline (i.e. someone applied Nikon's update manually via the HASP Update GUI), it sends the confirmation email (`[cite-cli] NIS-Elements license renewed on <Station>`) **and one Google-Calendar invite** for a recurring all-day reminder series. Its three weekly occurrences fall 14 days before, 7 days before, and on the new expiration date. The invite is emailed to `CITE_ALERT_TO`; Google Calendar adds recognized invitations according to that account's **Add invitations to my calendar** setting. Any stale pending-submission state is cleared.
+**Step 1 — detect a completed renewal:** if the dongle's expiration advanced since the last recorded baseline (i.e. someone applied Nikon's update manually via the HASP Update GUI), it sends the confirmation email (`[cite-cli] NIS-Elements license renewed on <Station>`). The scheduled Apps Script in `scripts/sheet_tracker.gs` reads that email, appends the renewal to the tracking Sheet, and directly creates one recurring all-day event in the account's default Google Calendar. Its three weekly occurrences fall 14 days before, 7 days before, and on the new expiration date. Any stale pending-submission state is cleared.
 
 **Step 2 — submit:** reads the dongle's expiration via ACC, checks the renewal window (default 14 days), and submits a fresh `.c2l` to Nikon if needed. While a submission is pending and the license is within 4 days of expiry, sends an URGENT reminder email (throttled to one per 20 h) to apply Nikon's reply manually.
 
@@ -181,7 +181,7 @@ uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite renew `
 
 ### `cite notify-renewal` — manual renewal check (optional)
 
-Runs the same renewal-detection check as `cite renew` step 1 (confirmation email + calendar invites when the expiry advanced), as a standalone command. **You do not need to schedule this if `cite renew` is scheduled** — the check runs there daily. It exists for manual/one-off use, e.g. right after applying an update by hand when you don't want to wait for the next scheduled run.
+Runs the same renewal-detection check as `cite renew` step 1 (a confirmation email when the expiry advanced), as a standalone command. The scheduled Apps Script consumes that email to update the tracking Sheet and create the Google Calendar reminder series. **You do not need to schedule this if `cite renew` is scheduled** — the check runs there daily. It exists for manual/one-off use, e.g. right after applying an update by hand when you don't want to wait for the next scheduled run.
 
 **No duplicate emails:** the check only fires when the current expiry is *newer* than what's recorded in `%USERPROFILE%\.cite\last_notified_renewal.json`; once notified, re-running is a no-op. The baseline auto-seeds on first run; `--seed` re-baselines explicitly without sending an email.
 
@@ -249,7 +249,7 @@ cite renew --email EMAIL --full-name NAME --url TARGET [OPTIONS]
 
 ### `cite notify-renewal`
 
-Run the renewal-detection check (confirmation email + Google-Calendar reminder invites when the dongle's expiration has advanced since the last notification). Idempotent — re-running with no change is a no-op. The same check runs automatically on every `cite renew`.
+Run the renewal-detection check (a confirmation email when the dongle's expiration has advanced since the last notification). The scheduled Apps Script consumes the email to update the tracking Sheet and create the Google Calendar reminder series. Idempotent — re-running with no change is a no-op. The same check runs automatically on every `cite renew`.
 
 ```
 cite notify-renewal [OPTIONS]

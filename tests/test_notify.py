@@ -556,13 +556,11 @@ def test_notify_renewal_sends_when_expiry_advanced(
     result = runner.invoke(app, ["notify-renewal"])
     assert result.exit_code == 0, result.output
     assert "Renewal confirmation email sent" in result.output
-    assert "Calendar reminder invite sent" in result.output
-    # Two emails: the confirmation, then the calendar invite.
-    assert len(fake_smtp.instances) == 2
-    invite = fake_smtp.instances[1].sent
-    assert invite is not None
-    assert "Calendar reminders" in invite["Subject"]
-    assert "text/calendar" in invite.as_string()
+    assert len(fake_smtp.instances) == 1
+    confirmation = fake_smtp.instances[0].sent
+    assert confirmation is not None
+    assert "NIS-Elements license renewed" in confirmation["Subject"]
+    assert "text/calendar" not in confirmation.as_string()
     last = load_last_notified(tmp_last_notified_path)
     assert last is not None
     assert last.expiration_date == date(2027, 8, 1)
@@ -662,29 +660,3 @@ def test_send_urgency_alert_unconfigured_noop(fake_smtp) -> None:
     state = _make_state(days_until_exp=3)
     assert send_urgency_alert(state, days_remaining=3) is False
     assert fake_smtp.instances == []
-
-
-def test_notify_renewal_calendar_invite_fails_but_confirmation_sent(
-    fake_smtp, monkeypatch, tmp_last_notified_path: Path
-) -> None:
-    """Confirmation email delivers but the calendar-invite send fails
-    (e.g. a second, flakier SMTP hiccup): must surface the failure, but
-    still advance the baseline since the confirmation itself succeeded."""
-    from cite import _calendar
-
-    _set_creds(monkeypatch)
-    old = LicenseInfo(expiration_date=date(2026, 8, 1), hasp_id="12345678")
-    new = LicenseInfo(expiration_date=date(2027, 8, 1), hasp_id="12345678")
-    save_last_notified(old, tmp_last_notified_path)
-    monkeypatch.setattr(_renew, "get_license_info", lambda: new)
-    monkeypatch.setattr(_calendar, "send_reminder_invites", lambda *a, **k: False)
-
-    result = runner.invoke(app, ["notify-renewal"])
-    assert result.exit_code == 0, result.output
-    assert "Renewal confirmation email sent" in result.output
-    assert "Calendar invite email failed to send" in result.output
-    # Only the confirmation email actually went out.
-    assert len(fake_smtp.instances) == 1
-    last = load_last_notified(tmp_last_notified_path)
-    assert last is not None
-    assert last.expiration_date == date(2027, 8, 1)

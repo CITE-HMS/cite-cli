@@ -13,7 +13,6 @@ import cite
 from cite._renew import RenewTarget, hasp_id_to_hex, hasp_id_to_station
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
-STATE = {"verbose": False}
 
 
 def _ts() -> str:
@@ -433,8 +432,8 @@ def renew(
 
     1. Detect a completed renewal: if the dongle's expiration advanced
        since the last baseline (i.e. an update was applied manually), send
-       the confirmation email plus Google-Calendar reminder invites for
-       the new expiration date, and clear any stale pending state.
+       the confirmation email consumed by the tracking Apps Script, and
+       clear any stale pending state.
 
     2. Submit phase: read the dongle's expiration via ACC, check the
        renewal window, dedup against any prior submission, and POST a fresh
@@ -445,12 +444,12 @@ def renew(
     Applying Nikon's reply is a manual step: download the .l2c from the
     link in Nikon's email and apply it on the station via the HASP Update
     GUI (nis_hasp_update.exe). The next daily run detects the new
-    expiration date and sends the confirmation + calendar invites.
+    expiration date and sends the confirmation email.
     """
     with _alert_on_failure("renew"):
-        # Detect a manual renewal first: send confirmation + calendar
-        # invites if the expiration advanced, and clear stale pending
-        # state so the submit phase can start the next cycle cleanly.
+        # Detect a manual renewal first: send a confirmation email if the
+        # expiration advanced, and clear stale pending state so the submit
+        # phase can start the next cycle cleanly.
         _check_and_notify_renewal(auto_seed=True)
         _clear_stale_renew_state_if_renewed()
 
@@ -653,7 +652,7 @@ def request_file(
 
 def _check_and_notify_renewal(*, auto_seed: bool, strict: bool = False) -> None:
     """Detect an applied renewal (dongle expiry advanced past the baseline)
-    and send the confirmation email + calendar reminder invites.
+    and send the confirmation email.
 
     Shared by `cite renew` (every daily run, non-strict) and the
     `notify-renewal` command (strict: ACC/SMTP failures exit non-zero).
@@ -661,12 +660,9 @@ def _check_and_notify_renewal(*, auto_seed: bool, strict: bool = False) -> None:
     phase. The baseline is only updated once the confirmation email is
     delivered (or SMTP is unconfigured), so failed sends retry next run.
     """
-    from cite._calendar import send_reminder_invites
     from cite._notify import _is_configured, send_apply_success_email
     from cite._renew import (
         get_license_info,
-        hasp_id_to_hex,
-        hasp_id_to_station,
         load_last_notified,
         save_last_notified,
     )
@@ -727,23 +723,6 @@ def _check_and_notify_renewal(*, auto_seed: bool, strict: bool = False) -> None:
     sent = send_apply_success_email(before=last, after=current)
     if sent:
         typer.secho(f"{_ts()}Renewal confirmation email sent.", fg="green")
-        if send_reminder_invites(
-            station=hasp_id_to_station(current.hasp_id),
-            hasp_hex=hasp_id_to_hex(current.hasp_id),
-            expiry=current.expiration_date,
-        ):
-            typer.secho(
-                f"{_ts()}Calendar reminder invite sent "
-                f"(weekly series: 14 d / 7 d / day-of "
-                f"{current.expiration_date.isoformat()}).",
-                fg="green",
-            )
-        else:
-            typer.secho(
-                f"{_ts()}Calendar invite email failed to send.",
-                fg="yellow",
-                err=True,
-            )
     elif configured:
         # Configured but SMTP failed — leave baseline unchanged so next run
         # retries the whole notification.
@@ -833,8 +812,8 @@ def notify_renewal(
         "without sending an email. Run once on a freshly-set-up machine.",
     ),
 ) -> None:
-    """Send the renewal-confirmation email + calendar reminder invites if the
-    dongle's expiration has advanced since the last notification.
+    """Send the renewal-confirmation email if the dongle's expiration has
+    advanced since the last notification.
     Idempotent: re-running with no change is a no-op.
 
     The same check runs automatically on every `cite renew`; this command

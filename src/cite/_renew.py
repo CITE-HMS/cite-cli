@@ -17,7 +17,6 @@ from pathlib import Path
 import requests
 
 DEFAULT_URL = "https://nis-e-update.nikon-instruments.jp/dealers/"
-DEFAULT_DAYS_BEFORE = 14
 
 MOCK_C2L_SENTINEL = "mock"
 MOCK_C2L_PATH = Path(__file__).parent / "mock_renew" / "mock.c2l"
