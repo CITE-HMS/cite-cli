@@ -447,13 +447,13 @@ def renew(
     GUI (nis_hasp_update.exe). The next daily run detects the new
     expiration date and sends the confirmation + calendar invites.
     """
-    # Detect a manual renewal first: send confirmation + calendar invites
-    # if the expiration advanced, and clear stale pending state so the
-    # submit phase can start the next cycle cleanly.
-    _check_and_notify_renewal(auto_seed=True)
-    _clear_stale_renew_state_if_renewed()
-
     with _alert_on_failure("renew"):
+        # Detect a manual renewal first: send confirmation + calendar
+        # invites if the expiration advanced, and clear stale pending
+        # state so the submit phase can start the next cycle cleanly.
+        _check_and_notify_renewal(auto_seed=True)
+        _clear_stale_renew_state_if_renewed()
+
         from cite._renew import (
             GENERATED_C2L_PATH,
             RENEW_STATE_PATH,
