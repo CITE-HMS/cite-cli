@@ -675,9 +675,7 @@ def test_renew_state_roundtrip(tmp_state_path: Path) -> None:
         hasp_id="4B92F5FA",
         submitted_at=datetime(2026, 5, 14, 12, 41, 33, tzinfo=timezone.utc),
         url="https://nis-e-update.nikon-instruments.jp/dealers/",
-        last_sync_attempted_at=datetime(
-            2026, 5, 16, 12, 41, 33, tzinfo=timezone.utc
-        ),
+        last_sync_attempted_at=datetime(2026, 5, 16, 12, 41, 33, tzinfo=timezone.utc),
     )
     save_renew_state(state)
     loaded = load_renew_state()
@@ -1458,6 +1456,58 @@ def test_cli_renew_failed_sync_sends_failure_email(
     assert sent is not None
     assert "renew synchronization failed" in sent["Subject"]
     assert "Cannot contact the license server" in sent.get_content()
+
+
+def test_cli_renew_stalled_successful_sync_sends_failure_alert(
+    fake_smtp,
+    c2l_file: Path,
+    tmp_state_path: Path,
+    tmp_last_notified_path,
+    monkeypatch,
+) -> None:
+    """A sync that keeps reporting success without ACC ever confirming a new
+    expiration escalates to a failure alert once the submission is stale
+    enough (LICENSE_SYNC_STALL_THRESHOLD) that normal Nikon turnaround no
+    longer explains the lack of progress."""
+    _set_alert_creds(monkeypatch)
+    hasp_id = "159918744"
+    current = LicenseInfo(
+        expiration_date=date.today() + timedelta(days=10), hasp_id=hasp_id
+    )
+    _renew.save_last_notified(current)
+    save_renew_state(
+        RenewState(
+            expiration_date=current.expiration_date,
+            hasp_id=hasp_id,
+            submitted_at=datetime.now(timezone.utc)
+            - _renew.LICENSE_SYNC_STALL_THRESHOLD
+            - timedelta(minutes=1),
+            url=URL_ALIASES["nikon"],
+        )
+    )
+
+    monkeypatch.setattr(_renew, "get_license_info", lambda **_: current)
+    monkeypatch.setattr(
+        _renew,
+        "trigger_license_sync",
+        lambda _: LicenseSyncResult(
+            success=True,
+            status="Completed",
+            message="Synchronization completed.",
+        ),
+    )
+
+    result = _invoke_nikon_renew(c2l_file)
+    assert result.exit_code == 0, result.output
+    assert "License synchronization status: Completed" in result.output
+    assert "Failure alert email sent" in result.output
+    assert "Renewal confirmation email sent" not in result.output
+
+    assert len(fake_smtp.instances) == 1
+    sent = fake_smtp.instances[0].sent
+    assert sent is not None
+    assert "renew synchronization failed" in sent["Subject"]
+    assert "may need manual attention" in sent.get_content()
 
 
 def test_cli_renew_detects_renewal_and_sends_confirmation_email(

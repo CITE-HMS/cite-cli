@@ -44,9 +44,10 @@ LAST_HASP_ID_PATH = Path.home() / ".cite" / "last_hasp_id.txt"
 LICENSE_SYNC_SCRIPT_PATH = Path(__file__).with_name("_sync_license.ps1")
 
 LICENSE_SYNC_INTERVAL = timedelta(days=2)
-DEFAULT_LICENSE_MANAGER_EXE = Path(
-    r"%PUBLIC%\NIS_Elements\licmgr_s.exe"
-)
+# How long a submission may go through successful-looking syncs without ACC
+# confirming a new expiration before it's treated as stalled and alerted on.
+LICENSE_SYNC_STALL_THRESHOLD = timedelta(days=6)
+DEFAULT_LICENSE_MANAGER_EXE = Path(r"%PUBLIC%\NIS_Elements\licmgr_s.exe")
 
 # Standard install locations for Nikon's HASP Update tool. The user can
 # override via the CITE_RUS_EXE env var if their install is elsewhere.

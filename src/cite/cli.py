@@ -381,6 +381,8 @@ def _maybe_sync_pending_renewal(*, dry_run: bool) -> bool:
     from dataclasses import replace
 
     from cite._renew import (
+        LICENSE_SYNC_STALL_THRESHOLD,
+        _as_utc,
         get_license_info,
         license_sync_due,
         load_renew_state,
@@ -455,12 +457,26 @@ def _maybe_sync_pending_renewal(*, dry_run: bool) -> bool:
             bold=True,
         )
     else:
+        stalled = (
+            _as_utc(attempted_at) - _as_utc(state.submitted_at)
+            >= LICENSE_SYNC_STALL_THRESHOLD
+        )
         if not result.success:
             _dispatch_alert(
                 "renew synchronization",
                 RuntimeError(
                     f"License Manager reported {result.status}: "
                     f"{result.message or '(no detail)'}"
+                ),
+            )
+        elif stalled:
+            _dispatch_alert(
+                "renew synchronization",
+                RuntimeError(
+                    "License Manager has reported success on every hidden sync "
+                    f"since {state.submitted_at.date().isoformat()} but ACC "
+                    f"still reports {current.expiration_date.isoformat()}; "
+                    "the renewal may need manual attention."
                 ),
             )
         typer.secho(
@@ -538,8 +554,10 @@ def renew(
     2. Pending Nikon submissions are synchronized through a hidden License
        Manager after 2 days, then every 2 days until ACC confirms that the
        expiration advanced. Only that confirmation resumes the standard
-       success-email routine. Imminent expirations still receive throttled
-       urgency alerts.
+       success-email routine. If synchronization keeps reporting success
+       without ACC ever confirming a new expiration for 6+ days, a failure
+       alert is sent so a stalled renewal doesn't go unnoticed. Imminent
+       expirations still receive throttled urgency alerts.
 
     3. Submit phase: read the dongle's expiration via ACC, check the
        renewal window, dedup against any prior submission, and POST a fresh
