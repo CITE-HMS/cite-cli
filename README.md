@@ -15,9 +15,9 @@ This section covers everything needed to schedule `cite` commands unattended on 
 | Task | Purpose |
 |---|---|
 | `cite clean` | Delete old files on a schedule |
-| `cite renew` | Monitor the license, submit renewal requests to Nikon, and send a confirmation email when a renewal is detected (consumed by `scripts/sheet_tracker.gs` for the tracking Sheet + Google-Calendar reminders) |
+| `cite renew` | Monitor the license, submit renewal requests to Nikon, synchronize pending renewals every two days, and send a confirmation email only after the expiration advances (consumed by `scripts/sheet_tracker.gs` for the tracking Sheet + Google-Calendar reminders) |
 
-Applying Nikon's reply is a **manual step**: download the `.l2c` from the link in Nikon's email and apply it on the station via the HASP Update GUI (`nis_hasp_update.exe`). The next daily `cite renew` run detects the new expiration date automatically.
+Pending submissions are synchronized automatically through the NIS-Elements License Manager. The first attempt runs two days after submission and retries every two days until the local ACC expiration date advances. Manual application remains available as a fallback.
 
 ### Common prerequisites
 
@@ -129,18 +129,20 @@ To clean a specific directory instead of the defaults, add the path as the first
 
 Runs the renewal loop daily. **One Task Scheduler entry per machine** covers everything:
 
-**Step 1 — detect a completed renewal:** if the dongle's expiration advanced since the last recorded baseline (i.e. someone applied Nikon's update manually via the HASP Update GUI), it sends the confirmation email (`[cite-cli] NIS-Elements license renewed on <Station>`). The scheduled Apps Script in `scripts/sheet_tracker.gs` reads that email, appends the renewal to the tracking Sheet, and directly creates one recurring all-day event in the account's default Google Calendar. Its three weekly occurrences fall 14 days before, 7 days before, and on the new expiration date. Any stale pending-submission state is cleared.
+**Step 1 — detect a completed renewal:** if the dongle's expiration advanced since the last recorded baseline, it sends the confirmation email (`[cite-cli] NIS-Elements license renewed on <Station>`). The scheduled Apps Script in `scripts/sheet_tracker.gs` reads that email, appends the renewal to the tracking Sheet, and directly creates one recurring all-day event in the account's default Google Calendar. Its three weekly occurrences fall 14 days before, 7 days before, and on the new expiration date. Any stale pending-submission state is cleared.
 
-**Step 2 — submit:** reads the dongle's expiration via ACC, checks the renewal window (default 14 days), and submits a fresh `.c2l` to Nikon if needed. While a submission is pending and the license is within 4 days of expiry, sends an URGENT reminder email (throttled to one per 20 h) to apply Nikon's reply manually.
+**Step 2 — synchronize pending submissions:** beginning 48 hours after a real Nikon submission, starts License Manager invisibly and invokes its Synchronize action. If ACC still reports the submitted expiration, no success email is sent and another attempt becomes due 48 hours later. If ACC reports a later expiration, the normal detection routine sends the confirmation email immediately.
 
-**The apply step is manual by design:** when Nikon's reply arrives in the shared inbox, download the `.l2c` from the `dealers/download.php?request=...` link (each link is one-time!) and apply it on the matching station via the HASP Update GUI (`nis_hasp_update.exe`). The filename (`<HASPHEX>.l2c`) tells you which station it belongs to — see `HASP_ID_TO_STATIONS_MAP` in `src/cite/_renew.py`. The next daily run picks up the new expiry and handles the notifications.
+**Step 3 — submit:** reads the dongle's expiration via ACC, checks the renewal window (default 14 days), and submits a fresh `.c2l` to Nikon if needed. While a submission is pending and the license is within 4 days of expiry, it still sends an URGENT reminder email (throttled to one per 20 h).
+
+The automatic action uses `%PUBLIC%\NIS_Elements\licmgr_s.exe` by default, so the Windows drive and public-profile directory are discovered per PC. Set `CITE_LICENSE_MANAGER_EXE` to a different full path when needed. The vendor does not expose Synchronize as a native command-line switch, so `cite` starts License Manager hidden, invokes its Synchronize control through Windows UI Automation, captures the displayed status, and then independently verifies the expiration through ACC. The ACC check—not the GUI status—is the success gate. A launch failure, confirmed License Manager failure, or post-sync ACC verification failure sends the standard station-aware failure-alert email when SMTP alerts are configured. An unchanged expiration after an otherwise successful sync remains pending without generating a false failure alert.
 
 **Details:**
 
 - Expiration is read live from the local Sentinel HASP dongle via ACC at `http://localhost:1947`.
 - The `.c2l` is auto-generated by running `nis_hasp_update.exe -r` (discovered under `C:\Program Files\NIS-Elements*\HASP\`).
 - The submission note includes the HASP ID (e.g. `09882A98`) so Nikon's staff can identify the dongle.
-- **Idempotent**: once submitted for a given expiration date, won't re-submit until the renewal is applied (state in `%USERPROFILE%\.cite\renew_state.json`). Safe to schedule daily.
+- **Idempotent**: once submitted for a given expiration date, it won't re-submit until the renewal is applied. `%USERPROFILE%\.cite\renew_state.json` stores the submission and last synchronization-attempt timestamps, so the task is safe to schedule daily while synchronization runs no more than once every two days.
 - The renewal-detection baseline (`%USERPROFILE%\.cite\last_notified_renewal.json`) auto-seeds on the first run of a fresh machine — no setup step needed.
 
 **Task Scheduler arguments** (runs daily):
@@ -151,7 +153,7 @@ Runs the renewal loop daily. **One Task Scheduler entry per machine** covers eve
 
 Schedule at e.g. 01:00 (a random delay per machine is still a good idea to spread the load).
 
-On most days both steps exit cleanly — no renewal detected, license not yet within the 14-day window — net effect: a quick log line and exit 0.
+On most days all steps exit cleanly—no renewal detected, no synchronization due, and the license not yet within the 14-day window—so the net effect is a quick log line and exit 0.
 
 **Optional overrides:**
 
@@ -228,7 +230,7 @@ cite clean [DIRECTORY] [OPTIONS]
 
 ### `cite renew`
 
-Submit the NIS-Elements Time-DEMO license renewal form to Nikon when the license is within the renewal window.
+Monitor the NIS-Elements Time-DEMO license, submit to Nikon within the renewal window, synchronize pending submissions every two days, and send the success email only after ACC reports a later expiration.
 
 ```
 cite renew --email EMAIL --full-name NAME --url TARGET [OPTIONS]

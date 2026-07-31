@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from glob import glob
 from pathlib import Path
@@ -40,6 +41,12 @@ GENERATED_C2L_PATH = Path.home() / ".cite" / "generated_request.c2l"
 LAST_NOTIFIED_PATH = Path.home() / ".cite" / "last_notified_renewal.json"
 LAST_URGENCY_PATH = Path.home() / ".cite" / "last_urgency_alert.json"
 LAST_HASP_ID_PATH = Path.home() / ".cite" / "last_hasp_id.txt"
+LICENSE_SYNC_SCRIPT_PATH = Path(__file__).with_name("_sync_license.ps1")
+
+LICENSE_SYNC_INTERVAL = timedelta(days=2)
+DEFAULT_LICENSE_MANAGER_EXE = Path(
+    r"%PUBLIC%\NIS_Elements\licmgr_s.exe"
+)
 
 # Standard install locations for Nikon's HASP Update tool. The user can
 # override via the CITE_RUS_EXE env var if their install is elsewhere.
@@ -85,6 +92,15 @@ class RenewState:
     hasp_id: str
     submitted_at: datetime
     url: str
+    last_sync_attempted_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class LicenseSyncResult:
+    success: bool
+    status: str
+    message: str
+    process_id: int | None = None
 
 
 def resolve_url(target: RenewTarget | str) -> str:
@@ -245,6 +261,11 @@ def load_renew_state(path: Path | None = None) -> RenewState | None:
             hasp_id=str(data["hasp_id"]),
             submitted_at=datetime.fromisoformat(data["submitted_at"]),
             url=str(data["url"]),
+            last_sync_attempted_at=(
+                datetime.fromisoformat(data["last_sync_attempted_at"])
+                if data.get("last_sync_attempted_at")
+                else None
+            ),
         )
     except (json.JSONDecodeError, KeyError, ValueError, TypeError):
         return None
@@ -261,6 +282,11 @@ def save_renew_state(state: RenewState, path: Path | None = None) -> None:
         "hasp_id": state.hasp_id,
         "submitted_at": state.submitted_at.isoformat(),
         "url": state.url,
+        "last_sync_attempted_at": (
+            state.last_sync_attempted_at.isoformat()
+            if state.last_sync_attempted_at is not None
+            else None
+        ),
     }
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     _atomic_replace(tmp, path)
@@ -334,6 +360,132 @@ def should_renew(expiration_date: date, days_before: int) -> bool:
     """
     days_left = (expiration_date - date.today()).days
     return days_left <= days_before
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Return an aware UTC datetime, accepting legacy naive state values."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def license_sync_due(
+    state: RenewState,
+    *,
+    now: datetime | None = None,
+    interval: timedelta = LICENSE_SYNC_INTERVAL,
+) -> bool:
+    """Return whether a pending Nikon submission is due for synchronization."""
+    if state.url != DEFAULT_URL:
+        return False
+    if now is None:
+        now = datetime.now(timezone.utc)
+    anchor = state.last_sync_attempted_at or state.submitted_at
+    return _as_utc(now) >= _as_utc(anchor) + interval
+
+
+def discover_license_manager_exe() -> Path | None:
+    """Locate the self-extracting NIS-Elements License Manager executable."""
+    override = os.environ.get("CITE_LICENSE_MANAGER_EXE")
+    configured_path = override or str(DEFAULT_LICENSE_MANAGER_EXE)
+    candidate = Path(os.path.expandvars(configured_path)).expanduser()
+    return candidate if candidate.is_file() else None
+
+
+def trigger_license_sync(
+    hasp_id: str,
+    *,
+    timeout: int = 180,
+    license_manager_exe: Path | None = None,
+    script_path: Path = LICENSE_SYNC_SCRIPT_PATH,
+) -> LicenseSyncResult:
+    """Invoke License Manager's Synchronize button in a hidden Windows session.
+
+    Laboratory Imaging does not expose Synchronize as a native CLI operation.
+    The packaged PowerShell adapter starts the GUI hidden, selects the requested
+    HASP key where possible, invokes automation control 1008, and returns the
+    result dialog as JSON. The caller must still verify the expiration via ACC;
+    a successful UI result alone is never proof that the renewal was applied.
+    """
+    if sys.platform != "win32":
+        raise RuntimeError("Automatic license synchronization requires Windows.")
+
+    if license_manager_exe is None:
+        license_manager_exe = discover_license_manager_exe()
+    if license_manager_exe is None or not license_manager_exe.is_file():
+        raise RuntimeError(
+            "Could not locate licmgr_s.exe. Set CITE_LICENSE_MANAGER_EXE to its "
+            "full path (default: "
+            "%PUBLIC%\\NIS_Elements\\licmgr_s.exe)."
+        )
+    if not script_path.is_file():
+        raise RuntimeError(f"License synchronization adapter is missing: {script_path}")
+
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if powershell is None:
+        raise RuntimeError("Could not locate Windows PowerShell.")
+
+    command = [
+        powershell,
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script_path),
+        "-LicenseManagerExe",
+        str(license_manager_exe),
+        "-HaspId",
+        hasp_id,
+        "-TimeoutSeconds",
+        str(timeout),
+    ]
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout + 45,
+            creationflags=creationflags,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"License synchronization adapter timed out after {timeout + 45}s."
+        ) from e
+    except OSError as e:
+        raise RuntimeError(
+            f"Could not start the license synchronization adapter: {e}"
+        ) from e
+
+    output_lines = [
+        line.strip() for line in completed.stdout.splitlines() if line.strip()
+    ]
+    payload: dict[str, object] | None = None
+    for line in reversed(output_lines):
+        try:
+            candidate = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict):
+            payload = candidate
+            break
+
+    if payload is None:
+        detail = (completed.stderr or completed.stdout or "(no output)").strip()
+        raise RuntimeError(
+            "License synchronization adapter returned no status JSON "
+            f"(exit {completed.returncode}): {detail}"
+        )
+
+    process_id = payload.get("ProcessId")
+    return LicenseSyncResult(
+        success=bool(payload.get("Success")) and completed.returncode == 0,
+        status=str(payload.get("Status", f"Exit{completed.returncode}")),
+        message=str(payload.get("Message", "")).strip(),
+        process_id=int(process_id) if isinstance(process_id, int) else None,
+    )
 
 
 def hasp_id_to_hex(hasp_id: str) -> str:

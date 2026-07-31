@@ -371,6 +371,107 @@ def _auto_mock_server_if_needed(target: RenewTarget, url: str) -> Iterator[None]
             typer.secho(f"{_ts()}Stopping auto-started mock server.", fg="bright_blue")
 
 
+def _maybe_sync_pending_renewal(*, dry_run: bool) -> bool:
+    """Run a due hidden License Manager synchronization.
+
+    Returns True when an attempt was recorded. The caller then re-runs the
+    normal ACC expiration/notification check; UI success is deliberately not
+    treated as proof that the license changed.
+    """
+    from dataclasses import replace
+
+    from cite._renew import (
+        get_license_info,
+        license_sync_due,
+        load_renew_state,
+        save_renew_state,
+        trigger_license_sync,
+    )
+
+    state = load_renew_state()
+    if state is None or not license_sync_due(state):
+        return False
+
+    if dry_run:
+        typer.secho(
+            f"{_ts()}Would synchronize pending HASP {state.hasp_id}; "
+            "the 2-day retry interval has elapsed.",
+            fg=(140, 140, 140),
+        )
+        return False
+
+    attempted_at = datetime.now(timezone.utc)
+    save_renew_state(replace(state, last_sync_attempted_at=attempted_at))
+    typer.secho(
+        f"{_ts()}Pending renewal is due for synchronization "
+        f"(submitted {state.submitted_at.date().isoformat()}); "
+        f"triggering hidden License Manager for HASP {state.hasp_id} ...",
+        fg="bright_blue",
+    )
+
+    try:
+        result = trigger_license_sync(state.hasp_id)
+    except RuntimeError as e:
+        typer.secho(
+            f"{_ts()}License synchronization could not run: {e}. "
+            "The expiration will still be checked; the next attempt is due "
+            "in 2 days.",
+            fg="yellow",
+            err=True,
+        )
+        _dispatch_alert("renew synchronization", e)
+        return True
+
+    color = "green" if result.success else "yellow"
+    detail = f": {result.message}" if result.message else ""
+    typer.secho(
+        f"{_ts()}License synchronization status: {result.status}{detail}",
+        fg=color,
+        err=not result.success,
+    )
+
+    try:
+        current = get_license_info(hasp_id=state.hasp_id)
+    except RuntimeError as e:
+        typer.secho(
+            f"{_ts()}Could not verify the expiration after synchronization: {e}. "
+            "No success email will be sent unless a later ACC check confirms "
+            "the date advanced.",
+            fg="yellow",
+            err=True,
+        )
+        _dispatch_alert(
+            "renew synchronization",
+            RuntimeError(f"Post-synchronization ACC verification failed: {e}"),
+        )
+        return True
+
+    if current.expiration_date > state.expiration_date:
+        typer.secho(
+            f"{_ts()}Synchronization verified: expiration advanced "
+            f"{state.expiration_date.isoformat()} -> "
+            f"{current.expiration_date.isoformat()}.",
+            fg="green",
+            bold=True,
+        )
+    else:
+        if not result.success:
+            _dispatch_alert(
+                "renew synchronization",
+                RuntimeError(
+                    f"License Manager reported {result.status}: "
+                    f"{result.message or '(no detail)'}"
+                ),
+            )
+        typer.secho(
+            f"{_ts()}Synchronization did not advance the expiration; it is still "
+            f"{current.expiration_date.isoformat()}; no success email will be "
+            "sent. The next attempt is due in 2 days.",
+            fg="yellow",
+        )
+    return True
+
+
 @app.command()
 def renew(
     email: str = typer.Option(
@@ -431,27 +532,28 @@ def renew(
     A daily `cite renew` does the following:
 
     1. Detect a completed renewal: if the dongle's expiration advanced
-       since the last baseline (i.e. an update was applied manually), send
-       the confirmation email consumed by the tracking Apps Script, and
-       clear any stale pending state.
+       since the last baseline, send the confirmation email consumed by the
+       tracking Apps Script and clear stale pending state.
 
-    2. Submit phase: read the dongle's expiration via ACC, check the
+    2. Pending Nikon submissions are synchronized through a hidden License
+       Manager after 2 days, then every 2 days until ACC confirms that the
+       expiration advanced. Only that confirmation resumes the standard
+       success-email routine. Imminent expirations still receive throttled
+       urgency alerts.
+
+    3. Submit phase: read the dongle's expiration via ACC, check the
        renewal window, dedup against any prior submission, and POST a fresh
-       `.c2l` to Nikon if needed. While a submission is pending and the
-       license is within 4 days of expiry, sends an URGENT reminder email
-       (at most once per 20 h) to apply Nikon's reply manually.
-
-    Applying Nikon's reply is a manual step: download the .l2c from the
-    link in Nikon's email and apply it on the station via the HASP Update
-    GUI (nis_hasp_update.exe). The next daily run detects the new
-    expiration date and sends the confirmation email.
+       `.c2l` to Nikon if needed.
     """
     with _alert_on_failure("renew"):
-        # Detect a manual renewal first: send a confirmation email if the
-        # expiration advanced, and clear stale pending state so the submit
-        # phase can start the next cycle cleanly.
+        # Detect an already-completed/manual renewal before attempting another
+        # synchronization. If a due sync runs, repeat the same proof-and-notify
+        # check immediately afterward.
         _check_and_notify_renewal(auto_seed=True)
         _clear_stale_renew_state_if_renewed()
+        if _maybe_sync_pending_renewal(dry_run=dry_run):
+            _check_and_notify_renewal(auto_seed=True)
+            _clear_stale_renew_state_if_renewed()
 
         from cite._renew import (
             GENERATED_C2L_PATH,
@@ -508,7 +610,8 @@ def renew(
                 typer.secho(
                     f"{_ts()}Already submitted on "
                     f"{state.submitted_at.date().isoformat()} for license expiring "
-                    f"{exp_date.isoformat()}. Awaiting Nikon's updated .c2v; "
+                    f"{exp_date.isoformat()}. Awaiting Nikon processing and the "
+                    "next scheduled synchronization; "
                     f"rerun with --force to resubmit.",
                     fg="yellow",
                 )

@@ -6,6 +6,7 @@ import threading
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -16,11 +17,14 @@ from cite._renew import (
     MOCK_C2L_PATH,
     URL_ALIASES,
     LicenseInfo,
+    LicenseSyncResult,
     RenewState,
     RenewTarget,
+    discover_license_manager_exe,
     discover_rus_exe,
     generate_c2l,
     get_license_info,
+    license_sync_due,
     load_cached_hasp_id,
     load_renew_state,
     resolve_c2l_file,
@@ -28,6 +32,7 @@ from cite._renew import (
     save_renew_state,
     should_renew,
     submit_license_form,
+    trigger_license_sync,
 )
 from cite.cli import app
 
@@ -670,6 +675,9 @@ def test_renew_state_roundtrip(tmp_state_path: Path) -> None:
         hasp_id="4B92F5FA",
         submitted_at=datetime(2026, 5, 14, 12, 41, 33, tzinfo=timezone.utc),
         url="https://nis-e-update.nikon-instruments.jp/dealers/",
+        last_sync_attempted_at=datetime(
+            2026, 5, 16, 12, 41, 33, tzinfo=timezone.utc
+        ),
     )
     save_renew_state(state)
     loaded = load_renew_state()
@@ -701,6 +709,127 @@ def test_save_renew_state_atomic(tmp_state_path: Path) -> None:
     assert tmp_state_path.is_file()
     leftover = tmp_state_path.with_suffix(tmp_state_path.suffix + ".tmp")
     assert not leftover.exists()
+
+
+def test_load_renew_state_legacy_file_defaults_last_sync_to_none(
+    tmp_state_path: Path,
+) -> None:
+    tmp_state_path.write_text(
+        json.dumps(
+            {
+                "expiration_date": "2026-07-27",
+                "hasp_id": "4B92F5FA",
+                "submitted_at": "2026-05-14T12:41:33+00:00",
+                "url": URL_ALIASES["nikon"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = load_renew_state()
+    assert state is not None
+    assert state.last_sync_attempted_at is None
+
+
+def test_license_sync_due_uses_submission_then_last_attempt() -> None:
+    submitted = datetime(2026, 7, 1, 12, tzinfo=timezone.utc)
+    state = RenewState(
+        expiration_date=date(2026, 7, 10),
+        hasp_id="159918744",
+        submitted_at=submitted,
+        url=URL_ALIASES["nikon"],
+    )
+
+    assert not license_sync_due(
+        state, now=submitted + timedelta(days=2) - timedelta(seconds=1)
+    )
+    assert license_sync_due(state, now=submitted + timedelta(days=2))
+
+    attempted = submitted + timedelta(days=2)
+    state = RenewState(
+        expiration_date=state.expiration_date,
+        hasp_id=state.hasp_id,
+        submitted_at=state.submitted_at,
+        url=state.url,
+        last_sync_attempted_at=attempted,
+    )
+    assert not license_sync_due(state, now=attempted + timedelta(days=1))
+    assert license_sync_due(state, now=attempted + timedelta(days=2))
+
+
+def test_license_sync_due_skips_non_nikon_submission() -> None:
+    submitted = datetime.now(timezone.utc) - timedelta(days=20)
+    state = RenewState(
+        expiration_date=date.today(),
+        hasp_id="159918744",
+        submitted_at=submitted,
+        url=URL_ALIASES["test"],
+    )
+    assert not license_sync_due(state, now=datetime.now(timezone.utc))
+
+
+def test_discover_license_manager_exe_honours_env_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fake_exe = tmp_path / "licmgr_s.exe"
+    fake_exe.write_bytes(b"")
+    monkeypatch.setenv("CITE_LICENSE_MANAGER_EXE", str(fake_exe))
+    assert discover_license_manager_exe() == fake_exe
+
+
+def test_discover_license_manager_exe_uses_public_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    public_dir = tmp_path / "shared-profile"
+    fake_exe = public_dir / "NIS_Elements" / "licmgr_s.exe"
+    fake_exe.parent.mkdir(parents=True)
+    fake_exe.write_bytes(b"")
+    monkeypatch.delenv("CITE_LICENSE_MANAGER_EXE", raising=False)
+    monkeypatch.setenv("PUBLIC", str(public_dir))
+
+    assert discover_license_manager_exe() == fake_exe
+
+
+def test_trigger_license_sync_parses_adapter_status(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fake_exe = tmp_path / "licmgr_s.exe"
+    fake_exe.write_bytes(b"")
+    fake_script = tmp_path / "sync.ps1"
+    fake_script.write_text("# test", encoding="utf-8")
+
+    monkeypatch.setattr(_renew.sys, "platform", "win32")
+    monkeypatch.setattr(_renew.shutil, "which", lambda _: "powershell.exe")
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                '{"Success":true,"Status":"Completed",'
+                '"Message":"Synchronized","ProcessId":1234}\n'
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(_renew.subprocess, "run", fake_run)
+    result = trigger_license_sync(
+        "159918744",
+        license_manager_exe=fake_exe,
+        script_path=fake_script,
+    )
+
+    assert result == LicenseSyncResult(
+        success=True,
+        status="Completed",
+        message="Synchronized",
+        process_id=1234,
+    )
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert "-HaspId" in command
+    assert command[command.index("-HaspId") + 1] == "159918744"
 
 
 # --- discover_rus_exe / generate_c2l ---
@@ -1146,6 +1275,189 @@ def _invoke_renew(c2l_file: Path):
             "test",
         ],
     )
+
+
+def _invoke_nikon_renew(c2l_file: Path):
+    return runner.invoke(
+        app,
+        [
+            "renew",
+            "--email",
+            "detect@example.com",
+            "--full-name",
+            "Detect",
+            "--c2l-file",
+            str(c2l_file),
+            "--url",
+            "nikon",
+        ],
+    )
+
+
+def test_cli_renew_due_sync_verifies_expiration_then_sends_confirmation(
+    fake_smtp,
+    c2l_file: Path,
+    tmp_state_path: Path,
+    tmp_last_notified_path,
+    monkeypatch,
+) -> None:
+    """A due hidden sync only reaches the success-email path after ACC proves
+    that the submitted expiration date advanced."""
+    _set_alert_creds(monkeypatch)
+    hasp_id = "159918744"
+    old = LicenseInfo(
+        expiration_date=date.today() + timedelta(days=10), hasp_id=hasp_id
+    )
+    updated = LicenseInfo(
+        expiration_date=date.today() + timedelta(days=365), hasp_id=hasp_id
+    )
+    _renew.save_last_notified(old)
+    save_renew_state(
+        RenewState(
+            expiration_date=old.expiration_date,
+            hasp_id=hasp_id,
+            submitted_at=datetime.now(timezone.utc) - timedelta(days=2, minutes=1),
+            url=URL_ALIASES["nikon"],
+        )
+    )
+
+    sync_calls: list[str] = []
+
+    def fake_sync(requested_hasp_id: str) -> LicenseSyncResult:
+        sync_calls.append(requested_hasp_id)
+        return LicenseSyncResult(
+            success=True,
+            status="Completed",
+            message="Synchronization completed.",
+        )
+
+    # Initial detection + stale-state check see the old date. The post-sync
+    # verification and all following checks see the updated date.
+    infos = iter([old, old, updated, updated, updated, updated])
+    monkeypatch.setattr(_renew, "get_license_info", lambda **_: next(infos))
+    monkeypatch.setattr(_renew, "trigger_license_sync", fake_sync)
+
+    result = _invoke_nikon_renew(c2l_file)
+    assert result.exit_code == 0, result.output
+    assert sync_calls == [hasp_id]
+    assert "Synchronization verified" in result.output
+    assert "Renewal confirmation email sent" in result.output
+    assert "No renewal needed" in result.output
+    assert not tmp_state_path.exists()
+
+    assert len(fake_smtp.instances) == 1
+    sent = fake_smtp.instances[0].sent
+    assert sent is not None
+    assert "NIS-Elements license renewed" in sent["Subject"]
+
+
+def test_cli_renew_due_sync_unchanged_expiration_retries_after_two_days(
+    fake_smtp,
+    c2l_file: Path,
+    tmp_state_path: Path,
+    tmp_last_notified_path,
+    monkeypatch,
+) -> None:
+    """An unchanged expiration sends no success email and persists the attempt
+    timestamp so the next daily run does not synchronize again."""
+    hasp_id = "159918744"
+    current = LicenseInfo(
+        expiration_date=date.today() + timedelta(days=10), hasp_id=hasp_id
+    )
+    _renew.save_last_notified(current)
+    save_renew_state(
+        RenewState(
+            expiration_date=current.expiration_date,
+            hasp_id=hasp_id,
+            submitted_at=datetime.now(timezone.utc) - timedelta(days=4),
+            url=URL_ALIASES["nikon"],
+        )
+    )
+
+    sync_calls: list[str] = []
+
+    def fake_sync(requested_hasp_id: str) -> LicenseSyncResult:
+        sync_calls.append(requested_hasp_id)
+        return LicenseSyncResult(
+            success=True,
+            status="Completed",
+            message="Synchronization completed.",
+        )
+
+    monkeypatch.setattr(_renew, "get_license_info", lambda **_: current)
+    monkeypatch.setattr(_renew, "trigger_license_sync", fake_sync)
+
+    first = _invoke_nikon_renew(c2l_file)
+    assert first.exit_code == 0, first.output
+    assert "expiration; it is still" in first.output
+    assert "Renewal confirmation email sent" not in first.output
+    assert sync_calls == [hasp_id]
+    assert fake_smtp.instances == []
+
+    state = load_renew_state()
+    assert state is not None
+    assert state.last_sync_attempted_at is not None
+    assert datetime.now(timezone.utc) - state.last_sync_attempted_at < timedelta(
+        minutes=1
+    )
+
+    second = _invoke_nikon_renew(c2l_file)
+    assert second.exit_code == 0, second.output
+    assert "triggering hidden License Manager" not in second.output
+    assert sync_calls == [hasp_id]
+    assert fake_smtp.instances == []
+
+
+def test_cli_renew_failed_sync_sends_failure_email(
+    fake_smtp,
+    c2l_file: Path,
+    tmp_state_path: Path,
+    tmp_last_notified_path,
+    monkeypatch,
+) -> None:
+    """A failed License Manager result with no expiration advance sends the
+    standard station-aware failure alert while keeping the renewal pending."""
+    _set_alert_creds(monkeypatch)
+    hasp_id = "159918744"
+    current = LicenseInfo(
+        expiration_date=date.today() + timedelta(days=10), hasp_id=hasp_id
+    )
+    _renew.save_last_notified(current)
+    save_renew_state(
+        RenewState(
+            expiration_date=current.expiration_date,
+            hasp_id=hasp_id,
+            submitted_at=datetime.now(timezone.utc) - timedelta(days=3),
+            url=URL_ALIASES["nikon"],
+        )
+    )
+
+    monkeypatch.setattr(_renew, "get_license_info", lambda **_: current)
+    monkeypatch.setattr(
+        _renew,
+        "trigger_license_sync",
+        lambda _: LicenseSyncResult(
+            success=False,
+            status="Failed",
+            message="Cannot contact the license server.",
+        ),
+    )
+
+    result = _invoke_nikon_renew(c2l_file)
+    assert result.exit_code == 0, result.output
+    assert "License synchronization status: Failed" in result.output
+    assert "Failure alert email sent" in result.output
+    assert "Renewal confirmation email sent" not in result.output
+
+    state = load_renew_state()
+    assert state is not None
+    assert state.last_sync_attempted_at is not None
+
+    assert len(fake_smtp.instances) == 1
+    sent = fake_smtp.instances[0].sent
+    assert sent is not None
+    assert "renew synchronization failed" in sent["Subject"]
+    assert "Cannot contact the license server" in sent.get_content()
 
 
 def test_cli_renew_detects_renewal_and_sends_confirmation_email(
