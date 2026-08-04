@@ -293,6 +293,27 @@ HASP ID: 159918744
 
 ---
 
+### `cite sync-license`
+
+Manually trigger the hidden License Manager Synchronize action used automatically by `cite renew` step 2. Useful for testing the adapter on a given machine/HASP scope without waiting for a pending submission to become due — it doesn't touch `renew_state.json` and doesn't send alert emails.
+
+```
+cite sync-license [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--hasp-id` | _(local ACC)_ | HASP key ID to synchronize. If omitted, reads the current one from the local ACC. |
+| `--timeout` | `180` | Seconds to wait for the License Manager Synchronize dialog. |
+
+Requires Windows and `%PUBLIC%\NIS_Elements\licmgr_s.exe` (or `CITE_LICENSE_MANAGER_EXE`). Prints the raw synchronization status/message and exits non-zero on failure, so it's safe to run once per station to confirm the adapter works there:
+
+```powershell
+uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite sync-license
+```
+
+---
+
 ### `cite request-file`
 
 Manually generate a fresh `.c2l` renewal request file by running `nis_hasp_update.exe -r`.

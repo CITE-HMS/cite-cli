@@ -740,6 +740,64 @@ def license_info(
     typer.echo(f"HASP ID: {info.hasp_id}")
 
 
+@app.command("sync-license")
+def sync_license(
+    hasp_id: str = typer.Option(
+        None,
+        "--hasp-id",
+        help="HASP key ID to synchronize. Defaults to the ID reported by the "
+        "local ACC (Sentinel Admin Control Center).",
+    ),
+    timeout: int = typer.Option(
+        180,
+        "--timeout",
+        help="Seconds to wait for the License Manager Synchronize dialog.",
+    ),
+) -> None:
+    """Trigger the hidden License Manager Synchronize action directly.
+
+    A standalone test for the synchronization adapter that `renew` runs
+    automatically for pending Nikon submissions. Does not touch renewal
+    state or send alert emails; just runs the sync for the given (or
+    local) HASP ID and prints the result, so each scope/station can be
+    exercised on demand.
+    """
+    from cite._renew import get_license_info, trigger_license_sync
+
+    if hasp_id is None:
+        try:
+            hasp_id = get_license_info().hasp_id
+        except RuntimeError as e:
+            typer.secho(
+                f"{_ts()}No --hasp-id given and could not read one from ACC: {e}",
+                fg="red",
+                err=True,
+            )
+            raise typer.Exit(1) from e
+
+    typer.secho(
+        f"{_ts()}Triggering hidden License Manager synchronize for HASP {hasp_id} ...",
+        fg="bright_blue",
+    )
+    try:
+        result = trigger_license_sync(hasp_id, timeout=timeout)
+    except RuntimeError as e:
+        typer.secho(f"{_ts()}{e}", fg="red", err=True)
+        raise typer.Exit(1) from e
+
+    color = "green" if result.success else "yellow"
+    detail = f": {result.message}" if result.message else ""
+    typer.secho(
+        f"{_ts()}Synchronization status: {result.status}{detail}",
+        fg=color,
+        err=not result.success,
+    )
+    if result.process_id is not None:
+        typer.echo(f"Process ID: {result.process_id}")
+    if not result.success:
+        raise typer.Exit(1)
+
+
 @app.command("request-file")
 def request_file(
     output: Path = typer.Option(
