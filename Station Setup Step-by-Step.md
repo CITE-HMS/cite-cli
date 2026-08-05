@@ -162,51 +162,7 @@ causes lock and permission conflicts.
 
 ---
 
-## Phase 4 — Decide: standard user or administrator?
-
-Still logged in as **`cite-automation`**.
-
-☐ Confirm alerting reaches this account:
-
-```
-uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite test-alert
-```
-
-An email must arrive. If it says the env vars are not set, Phase 2 was done
-without `/M` — go back and redo it.
-
-☐ Test whether License Manager works **without** administrator rights:
-
-```
-uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite sync-license
-```
-
-This drives the real License Manager but touches no renewal state and sends no
-email, so it is safe to run repeatedly.
-
-**Read the result:**
-
-| What happens | What it means | What to do |
-| --- | --- | --- |
-| `Synchronization status: Completed` | A standard user is enough | Nothing — leave the account as-is ✅ |
-| A **UAC credential prompt** appears, or it hangs then times out | License Manager needs elevation | Promote the account (below) |
-| `Automatic license synchronization requires Windows.` | You are not on Windows | You are running this on the wrong machine |
-
-☐ **Only if elevation is required**, from an **admin** PowerShell:
-
-```
-Add-LocalGroupMember -Group "Administrators" -Member "cite-automation"
-```
-
-Then re-run `cite sync-license` to confirm it now completes.
-
-⚠️ Promoting the account means the auto-login credential is an administrator
-one. That is a real security downgrade — but the account is still purpose-made
-and local, so it remains better than auto-logging-in your everyday `Admin`.
-
----
-
-## Phase 5 — Enable auto-login for `cite-automation`
+## Phase 4 — Enable auto-login for `cite-automation`
 
 ☐ As **`Admin`** in an **elevated** PowerShell, unhide the auto-login checkbox
 (needed on current Windows 10/11):
@@ -235,7 +191,7 @@ guides. That one stores the password in the registry in **plain text**.
 
 ---
 
-## Phase 6 — Lock the session immediately after login
+## Phase 5 — Lock the session immediately after login
 
 Without this, the station boots to an unlocked desktop.
 
@@ -247,6 +203,7 @@ Without this, the station boots to an unlocked desktop.
     - ⚠️ do **not** check "Run with highest privileges"
 - **Triggers** — add **two**:
     - **At log on** → Specific user `cite-automation` → **Delay: 5 seconds**
+    - **At log on** → Specific user `cite-automation` → **Delay: 10 seconds**
     - **At log on** → Specific user `cite-automation` → **Delay: 15 seconds**
 - **Actions**
     - Start a program → `C:\Windows\System32\rundll32.exe`
@@ -278,7 +235,7 @@ both triggers.
 
 ---
 
-## Phase 7 — Create the three scheduled tasks
+## Phase 6 — Create the three scheduled tasks
 
 Every task uses the same **Action**: program `C:\Windows\System32\cmd.exe` with
 the arguments below. Replace `<uv>` with **that task's own account** `uv.exe`
@@ -290,7 +247,7 @@ Common settings unless stated otherwise:
 - **Conditions**: uncheck everything
 - **Settings**: **Allow task to be run on demand**, **Stop the task if it runs longer than: 1 hour**, **If the running task does not end when requested, force it to stop**
 
-### 7a — `cite-cli clean` (account: `Admin`)
+### 6a — `cite-cli clean` (account: `Admin`)
 
 - **General**: `Admin` · **Run whether user is logged on or not** · **Run with highest privileges**
 - **Trigger**: Daily, **12:00:00 AM**, recur every 1 day, **random delay: 1 hour**
@@ -304,7 +261,7 @@ Common settings unless stated otherwise:
 (required unattended). This task stays on `Admin` because it needs rights to
 delete other users' acquisition data.
 
-### 7b — `cite-cli sync` (account: `cite-automation`)
+### 6b — `cite-cli sync` (account: `cite-automation`)
 
 - **General**: `cite-automation` · **Run only when user is logged on** · **Run with highest privileges**
 - **Triggers** — add **two**:
@@ -320,7 +277,7 @@ delete other users' acquisition data.
 
 ⚠️ The **no random delay** is not optional — `sync` must stay ahead of `renew`.
 
-### 7c — `cite-cli renew` (account: `cite-automation`)
+### 6c — `cite-cli renew` (account: `cite-automation`)
 
 - **General**: `cite-automation` · **Run whether user is logged on or not** · **Run with highest privileges**
 - **Trigger**: Daily, **1:15:00 AM**, recur every 1 day, **random delay: 1 hour**
@@ -350,7 +307,7 @@ Grant the right, then save again.
 
 ---
 
-## Phase 8 — Verify
+## Phase 7 — Verify
 
 ☐ Run each task manually: select it in Task Scheduler → **Run** (▶️).
 
@@ -378,7 +335,7 @@ whole auto-login design depends on.
 
 ---
 
-## Phase 9 — The reboot test
+## Phase 8 — The reboot test
 
 This is the one that proves the setup.
 
@@ -396,7 +353,7 @@ each task.
 
 ---
 
-## Done — what to expect from here
+## Phase 9 — Done — what to expect from here
 
 On a normal day **nothing happens and no email arrives**. That is correct.
 
@@ -412,7 +369,7 @@ list and what each one means.
 
 ---
 
-## Troubleshooting
+## Phase 10 — Troubleshooting
 
 Problems seen on real stations, with the fix. Most are one-time per PC.
 
