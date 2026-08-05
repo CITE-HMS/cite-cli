@@ -19,8 +19,13 @@ def _ts() -> str:
     return datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")
 
 
-def _dispatch_alert(command: str, error: BaseException) -> None:
-    """Send a failure email (if configured) and log the dispatch result."""
+def _dispatch_alert(command: str, error: BaseException) -> bool:
+    """Send a failure email (if configured) and log the dispatch result.
+
+    Returns whether the email was actually delivered, so throttled callers
+    can retry on the next run instead of burning their interval on a
+    send that never made it.
+    """
     from cite._notify import send_failure_email
 
     # Unwrap typer.Exit to surface the underlying cause in the email.
@@ -34,9 +39,10 @@ def _dispatch_alert(command: str, error: BaseException) -> None:
         sent = send_failure_email(command, underlying)
     except Exception as e:  # never let alerting mask the real failure
         typer.secho(f"{_ts()}(alert dispatch errored: {e})", fg="yellow", err=True)
-        return
+        return False
     if sent:
         typer.secho(f"{_ts()}Failure alert email sent.", fg="yellow", err=True)
+    return sent
 
 
 @contextmanager
@@ -371,6 +377,150 @@ def _auto_mock_server_if_needed(target: RenewTarget, url: str) -> Iterator[None]
             typer.secho(f"{_ts()}Stopping auto-started mock server.", fg="bright_blue")
 
 
+def _maybe_sync_pending_renewal(
+    *,
+    dry_run: bool,
+    fail_on_error: bool = False,
+    report_noop: bool = False,
+) -> bool:
+    """Run a due hidden License Manager synchronization.
+
+    Returns True when an attempt was recorded. The caller then re-runs the
+    normal ACC expiration/notification check; UI success is deliberately not
+    treated as proof that the license changed.
+    """
+    from dataclasses import replace
+
+    from cite._renew import (
+        LICENSE_SYNC_STALL_THRESHOLD,
+        _as_utc,
+        get_license_info,
+        license_sync_due,
+        load_renew_state,
+        save_renew_state,
+        trigger_license_sync,
+    )
+
+    state = load_renew_state()
+    if state is None:
+        if report_noop:
+            typer.secho(
+                f"{_ts()}No pending renewal to synchronize.",
+                fg="green",
+            )
+        return False
+    if not license_sync_due(state):
+        if report_noop:
+            typer.secho(
+                f"{_ts()}No synchronization is due for pending HASP {state.hasp_id}.",
+                fg="green",
+            )
+        return False
+
+    if dry_run:
+        typer.secho(
+            f"{_ts()}Would synchronize pending HASP {state.hasp_id}; "
+            "the 2-day retry interval has elapsed.",
+            fg=(140, 140, 140),
+        )
+        return False
+
+    attempted_at = datetime.now(timezone.utc)
+    save_renew_state(replace(state, last_sync_attempted_at=attempted_at))
+    typer.secho(
+        f"{_ts()}Pending renewal is due for synchronization "
+        f"(submitted {state.submitted_at.date().isoformat()}); "
+        f"triggering hidden License Manager for HASP {state.hasp_id} ...",
+        fg="bright_blue",
+    )
+
+    try:
+        result = trigger_license_sync(state.hasp_id)
+    except RuntimeError as e:
+        # Only the combined `renew` run goes on to re-check the expiration;
+        # a standalone `cite sync` stops here and reports the failure.
+        detail = (
+            "The next attempt is due in 2 days."
+            if fail_on_error
+            else "The expiration will still be checked; the next attempt is due "
+            "in 2 days."
+        )
+        typer.secho(
+            f"{_ts()}License synchronization could not run: {e}. {detail}",
+            fg="yellow",
+            err=True,
+        )
+        if fail_on_error:
+            raise typer.Exit(1) from e
+        _dispatch_alert("renew synchronization", e)
+        return True
+
+    color = "green" if result.success else "yellow"
+    detail = f": {result.message}" if result.message else ""
+    typer.secho(
+        f"{_ts()}License synchronization status: {result.status}{detail}",
+        fg=color,
+        err=not result.success,
+    )
+
+    try:
+        current = get_license_info(hasp_id=state.hasp_id)
+    except RuntimeError as e:
+        typer.secho(
+            f"{_ts()}Could not verify the expiration after synchronization: {e}. "
+            "No success email will be sent unless a later ACC check confirms "
+            "the date advanced.",
+            fg="yellow",
+            err=True,
+        )
+        error = RuntimeError(f"Post-synchronization ACC verification failed: {e}")
+        if fail_on_error:
+            raise typer.Exit(1) from error
+        _dispatch_alert(
+            "renew synchronization",
+            error,
+        )
+        return True
+
+    if current.expiration_date > state.expiration_date:
+        typer.secho(
+            f"{_ts()}Synchronization verified: expiration advanced "
+            f"{state.expiration_date.isoformat()} -> "
+            f"{current.expiration_date.isoformat()}.",
+            fg="green",
+            bold=True,
+        )
+    else:
+        stalled = (
+            _as_utc(attempted_at) - _as_utc(state.submitted_at)
+            >= LICENSE_SYNC_STALL_THRESHOLD
+        )
+        failure: RuntimeError | None = None
+        if not result.success:
+            failure = RuntimeError(
+                f"License Manager reported {result.status}: "
+                f"{result.message or '(no detail)'}"
+            )
+        elif stalled:
+            failure = RuntimeError(
+                "License Manager has reported success on every hidden sync "
+                f"since {state.submitted_at.date().isoformat()} but ACC "
+                f"still reports {current.expiration_date.isoformat()}; "
+                "the renewal may need manual attention."
+            )
+        typer.secho(
+            f"{_ts()}Synchronization did not advance the expiration; it is still "
+            f"{current.expiration_date.isoformat()}; no success email will be "
+            "sent. The next attempt is due in 2 days.",
+            fg="yellow",
+        )
+        if failure is not None:
+            if fail_on_error:
+                raise typer.Exit(1) from failure
+            _dispatch_alert("renew synchronization", failure)
+    return True
+
+
 @app.command()
 def renew(
     email: str = typer.Option(
@@ -425,33 +575,43 @@ def renew(
         "--force",
         help="Submit even if the license is not within the renewal window.",
     ),
+    synchronize: bool = typer.Option(
+        False,
+        "--sync/--no-sync",
+        help="Also run a due License Manager synchronization. Disabled by "
+        "default so this command can run without an interactive Windows session.",
+    ),
 ) -> None:
     """Monitor the license and submit a renewal request to Nikon when due.
 
     A daily `cite renew` does the following:
 
     1. Detect a completed renewal: if the dongle's expiration advanced
-       since the last baseline (i.e. an update was applied manually), send
-       the confirmation email consumed by the tracking Apps Script, and
-       clear any stale pending state.
+       since the last baseline, send the confirmation email consumed by the
+       tracking Apps Script and clear stale pending state.
 
-    2. Submit phase: read the dongle's expiration via ACC, check the
+    2. With `--sync`, pending Nikon submissions are synchronized through a
+       hidden License Manager after 2 days, then every 2 days until ACC
+       confirms that the expiration advanced. Synchronization is disabled by
+       default; schedule `cite sync` separately in an interactive session.
+
+    3. Submit phase: read the dongle's expiration via ACC, check the
        renewal window, dedup against any prior submission, and POST a fresh
-       `.c2l` to Nikon if needed. While a submission is pending and the
-       license is within 4 days of expiry, sends an URGENT reminder email
-       (at most once per 20 h) to apply Nikon's reply manually.
+       `.c2l` to Nikon if needed.
 
-    Applying Nikon's reply is a manual step: download the .l2c from the
-    link in Nikon's email and apply it on the station via the HASP Update
-    GUI (nis_hasp_update.exe). The next daily run detects the new
-    expiration date and sends the confirmation email.
+    4. While a submission is pending, alert if `cite sync` has not recorded
+       an attempt in 4 days. That task needs a logged-on session, so a
+       station where nobody signs in never runs it and never reports it.
     """
     with _alert_on_failure("renew"):
-        # Detect a manual renewal first: send a confirmation email if the
-        # expiration advanced, and clear stale pending state so the submit
-        # phase can start the next cycle cleanly.
+        # Detect an already-completed/manual renewal before attempting another
+        # synchronization. If a due sync runs, repeat the same proof-and-notify
+        # check immediately afterward.
         _check_and_notify_renewal(auto_seed=True)
         _clear_stale_renew_state_if_renewed()
+        if synchronize and _maybe_sync_pending_renewal(dry_run=dry_run):
+            _check_and_notify_renewal(auto_seed=True)
+            _clear_stale_renew_state_if_renewed()
 
         from cite._renew import (
             GENERATED_C2L_PATH,
@@ -508,14 +668,17 @@ def renew(
                 typer.secho(
                     f"{_ts()}Already submitted on "
                     f"{state.submitted_at.date().isoformat()} for license expiring "
-                    f"{exp_date.isoformat()}. Awaiting Nikon's updated .c2v; "
+                    f"{exp_date.isoformat()}. Awaiting Nikon processing and the "
+                    "next scheduled synchronization; "
                     f"rerun with --force to resubmit.",
                     fg="yellow",
                 )
-                # Submission pending but not applied yet: nag (throttled to
-                # one email per 20 h) when expiry is imminent.
+                # Submission pending but not applied yet. Flag a dead sync leg
+                # first (the cause), then nag about imminent expiry (the
+                # symptom, throttled to one email per 20 h).
                 from cite._notify import send_urgency_alert
 
+                _maybe_warn_sync_not_running(state)
                 _maybe_send_urgency(state, send_urgency_alert)
                 return
 
@@ -617,6 +780,90 @@ def license_info(
         fg="bright_blue",
     )
     typer.echo(f"HASP ID: {info.hasp_id}")
+
+
+@app.command("sync")
+def sync_pending_renewal() -> None:
+    """Synchronize a due pending renewal through License Manager.
+
+    Intended for a separate Task Scheduler entry configured with "Run only
+    when user is logged on". The command reads renew_state.json and exits
+    successfully without opening License Manager when no Nikon renewal is due.
+    """
+    with _alert_on_failure("sync"):
+        # A prior manual or successful synchronization may already have
+        # advanced ACC. Clear that stale request before deciding to open the
+        # GUI, while leaving the normal `renew` command to send/retry notices.
+        _clear_stale_renew_state_if_renewed()
+        if not _maybe_sync_pending_renewal(
+            dry_run=False,
+            fail_on_error=True,
+            report_noop=True,
+        ):
+            return
+
+        # Preserve the previous combined workflow's immediate notification.
+        # Both helpers are idempotent, so the next headless `renew` remains a
+        # safe retry if ACC or SMTP is temporarily unavailable here.
+        _check_and_notify_renewal(auto_seed=True)
+        _clear_stale_renew_state_if_renewed()
+
+
+@app.command("sync-license")
+def sync_license(
+    hasp_id: str = typer.Option(
+        None,
+        "--hasp-id",
+        help="HASP key ID to synchronize. Defaults to the ID reported by the "
+        "local ACC (Sentinel Admin Control Center).",
+    ),
+    timeout: int = typer.Option(
+        180,
+        "--timeout",
+        help="Seconds to wait for the License Manager Synchronize dialog.",
+    ),
+) -> None:
+    """Trigger the hidden License Manager Synchronize action directly.
+
+    A standalone test for the synchronization adapter used by `cite sync` and
+    the legacy `cite renew --sync` workflow. Does not touch renewal state or
+    send alert emails; just runs the sync for the given (or local) HASP ID and
+    prints the result, so each scope/station can be exercised on demand.
+    """
+    from cite._renew import get_license_info, trigger_license_sync
+
+    if hasp_id is None:
+        try:
+            hasp_id = get_license_info().hasp_id
+        except RuntimeError as e:
+            typer.secho(
+                f"{_ts()}No --hasp-id given and could not read one from ACC: {e}",
+                fg="red",
+                err=True,
+            )
+            raise typer.Exit(1) from e
+
+    typer.secho(
+        f"{_ts()}Triggering hidden License Manager synchronize for HASP {hasp_id} ...",
+        fg="bright_blue",
+    )
+    try:
+        result = trigger_license_sync(hasp_id, timeout=timeout)
+    except RuntimeError as e:
+        typer.secho(f"{_ts()}{e}", fg="red", err=True)
+        raise typer.Exit(1) from e
+
+    color = "green" if result.success else "yellow"
+    detail = f": {result.message}" if result.message else ""
+    typer.secho(
+        f"{_ts()}Synchronization status: {result.status}{detail}",
+        fg=color,
+        err=not result.success,
+    )
+    if result.process_id is not None:
+        typer.echo(f"Process ID: {result.process_id}")
+    if not result.success:
+        raise typer.Exit(1)
 
 
 @app.command("request-file")
@@ -770,6 +1017,58 @@ def _clear_stale_renew_state_if_renewed() -> None:
             fg="green",
         )
         RENEW_STATE_PATH.unlink(missing_ok=True)
+
+
+def _maybe_warn_sync_not_running(state) -> None:  # type: ignore[no-untyped-def]
+    """Alert when `cite sync` has not run while a submission is pending.
+
+    `cite sync` needs a logged-on Windows session. On a station where nobody
+    signs in, Task Scheduler simply never starts it — so it cannot report its
+    own failure, and the pending renewal would sit unapplied until the
+    imminent-expiry alerts start at 4 days out. This runs from the headless
+    `renew` task, which is the only one guaranteed to fire.
+    """
+    from cite._renew import (
+        LICENSE_SYNC_ALERT_THROTTLE,
+        _as_utc,
+        license_sync_overdue,
+        load_last_sync_alert,
+        save_last_sync_alert,
+    )
+
+    if not license_sync_overdue(state):
+        return
+
+    now = datetime.now(timezone.utc)
+    last = load_last_sync_alert()
+    if last is not None and (now - _as_utc(last)) < LICENSE_SYNC_ALERT_THROTTLE:
+        return
+
+    anchor = state.last_sync_attempted_at
+    if anchor is None:
+        ran = "has never run"
+    else:
+        ran = f"last ran {(now - _as_utc(anchor)).days} day(s) ago"
+
+    typer.secho(
+        f"{_ts()}License Manager synchronization {ran} for the renewal "
+        f"submitted {state.submitted_at.date().isoformat()}.",
+        fg="yellow",
+        err=True,
+    )
+    delivered = _dispatch_alert(
+        "renew synchronization",
+        RuntimeError(
+            f"A Nikon renewal submitted on "
+            f"{state.submitted_at.date().isoformat()} is still pending, but "
+            f"License Manager synchronization {ran}. `cite sync` only runs "
+            "while a Windows user is logged on: check that the station's "
+            "account is signed in and that the 'cite-cli sync' scheduled task "
+            "is enabled. Until it runs, the renewal cannot be applied."
+        ),
+    )
+    if delivered:
+        save_last_sync_alert(now)
 
 
 def _maybe_send_urgency(state, send_urgency_alert) -> None:  # type: ignore[no-untyped-def]

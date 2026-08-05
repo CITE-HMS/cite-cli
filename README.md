@@ -10,14 +10,17 @@ Command line tools for CITE@HMS.
 
 This section covers everything needed to schedule `cite` commands unattended on Windows. Each subsection describes what the command does, how to configure email alerts, and the exact Task Scheduler arguments to use.
 
-**Two commands are intended to be scheduled** in a typical deployment:
+**Three commands are intended to be scheduled** in a typical deployment. The
+license-renewal workflow uses two independent tasks so its headless work still
+runs when nobody is logged on:
 
 | Task | Purpose |
 |---|---|
 | `cite clean` | Delete old files on a schedule |
-| `cite renew` | Monitor the license, submit renewal requests to Nikon, and send a confirmation email when a renewal is detected (consumed by `scripts/sheet_tracker.gs` for the tracking Sheet + Google-Calendar reminders) |
+| `cite renew` | Headlessly monitor the license, submit renewal requests to Nikon, and send a confirmation email only after the expiration advances |
+| `cite sync` | Synchronize due pending renewals through the GUI-only License Manager in a logged-on session |
 
-Applying Nikon's reply is a **manual step**: download the `.l2c` from the link in Nikon's email and apply it on the station via the HASP Update GUI (`nis_hasp_update.exe`). The next daily `cite renew` run detects the new expiration date automatically.
+Pending submissions are synchronized automatically through the NIS-Elements License Manager. The first attempt runs two days after submission and retries every two days until the local ACC expiration date advances. Manual application remains available as a fallback. `cite renew` and `cite sync` share `%USERPROFILE%\.cite\renew_state.json`, so both tasks must run as the same Windows user.
 
 ### Common prerequisites
 
@@ -61,7 +64,7 @@ tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<path/to/uv.exe>" tool run ...
 
 ### Email alerts on failure
 
-`cite clean`, `cite renew`, and `cite notify-renewal` all send a failure email when they exit non-zero or raise an uncaught exception. Configure this once per Windows user account; every scheduled task on that account picks it up automatically. If the env vars are absent, alerting silently no-ops.
+`cite clean`, `cite renew`, `cite sync`, and `cite notify-renewal` all send a failure email when they exit non-zero or raise an uncaught exception. Configure this once per Windows user account; every scheduled task on that account picks it up automatically. If the env vars are absent, alerting silently no-ops.
 
 **One-time setup (PowerShell):**
 
@@ -125,23 +128,25 @@ To clean a specific directory instead of the defaults, add the path as the first
 
 ---
 
-### `cite renew` — monitor, submit, and detect renewals in one daily command
+### `cite renew` — headless monitor, submit, and detection task
 
-Runs the renewal loop daily. **One Task Scheduler entry per machine** covers everything:
+Runs the headless part of the renewal loop daily, whether the Windows user is
+logged on or not:
 
-**Step 1 — detect a completed renewal:** if the dongle's expiration advanced since the last recorded baseline (i.e. someone applied Nikon's update manually via the HASP Update GUI), it sends the confirmation email (`[cite-cli] NIS-Elements license renewed on <Station>`). The scheduled Apps Script in `scripts/sheet_tracker.gs` reads that email, appends the renewal to the tracking Sheet, and directly creates one recurring all-day event in the account's default Google Calendar. Its three weekly occurrences fall 14 days before, 7 days before, and on the new expiration date. Any stale pending-submission state is cleared.
+**Step 1 — detect a completed renewal:** if the dongle's expiration advanced since the last recorded baseline, it sends the confirmation email (`[cite-cli] NIS-Elements license renewed on <Station>`). The scheduled Apps Script in `scripts/sheet_tracker.gs` reads that email, appends the renewal to the tracking Sheet, and directly creates one recurring all-day event in the account's default Google Calendar. Its three weekly occurrences fall 14 days before, 7 days before, and on the new expiration date. Any stale pending-submission state is cleared.
 
-**Step 2 — submit:** reads the dongle's expiration via ACC, checks the renewal window (default 14 days), and submits a fresh `.c2l` to Nikon if needed. While a submission is pending and the license is within 4 days of expiry, sends an URGENT reminder email (throttled to one per 20 h) to apply Nikon's reply manually.
+**Step 2 — submit:** reads the dongle's expiration via ACC, checks the renewal window (default 14 days), and submits a fresh `.c2l` to Nikon if needed. While a submission is pending and the license is within 4 days of expiry, it still sends an URGENT reminder email (throttled to one per 20 h).
 
-**The apply step is manual by design:** when Nikon's reply arrives in the shared inbox, download the `.l2c` from the `dealers/download.php?request=...` link (each link is one-time!) and apply it on the matching station via the HASP Update GUI (`nis_hasp_update.exe`). The filename (`<HASPHEX>.l2c`) tells you which station it belongs to — see `HASP_ID_TO_STATIONS_MAP` in `src/cite/_renew.py`. The next daily run picks up the new expiry and handles the notifications.
+**Step 3 — watch the sync leg:** `cite sync` needs a logged-on Windows session, so on a station where nobody signs in Task Scheduler never starts it — and it therefore cannot report its own failure. While a submission is pending, `renew` checks the synchronization-attempt timestamp and, once no attempt has been recorded for 4 days (two missed retry windows), sends a failure alert naming the likely cause. Throttled to one per 48 h. Because a submission normally lands ~14 days before expiry, this surfaces a dead sync leg around 10 days out instead of leaving it silent until the 4-day urgency alerts.
 
 **Details:**
 
 - Expiration is read live from the local Sentinel HASP dongle via ACC at `http://localhost:1947`.
 - The `.c2l` is auto-generated by running `nis_hasp_update.exe -r` (discovered under `C:\Program Files\NIS-Elements*\HASP\`).
 - The submission note includes the HASP ID (e.g. `09882A98`) so Nikon's staff can identify the dongle.
-- **Idempotent**: once submitted for a given expiration date, won't re-submit until the renewal is applied (state in `%USERPROFILE%\.cite\renew_state.json`). Safe to schedule daily.
+- **Idempotent**: once submitted for a given expiration date, it won't re-submit until the renewal is applied. `%USERPROFILE%\.cite\renew_state.json` stores the submission and synchronization-attempt timestamps shared with `cite sync`.
 - The renewal-detection baseline (`%USERPROFILE%\.cite\last_notified_renewal.json`) auto-seeds on the first run of a fresh machine — no setup step needed.
+- Alert throttles live in `%USERPROFILE%\.cite\last_urgency_alert.json` (20 h) and `%USERPROFILE%\.cite\last_sync_alert.json` (48 h). A send that fails does not consume the interval, so it retries on the next run.
 
 **Task Scheduler arguments** (runs daily):
 
@@ -149,9 +154,15 @@ Runs the renewal loop daily. **One Task Scheduler entry per machine** covers eve
 /c "tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<path/to/uv.exe>" tool run --refresh --from git+https://github.com/CITE-HMS/cite-cli cite renew --email you@example.com --full-name "Your Name" --url nikon > "%USERPROFILE%\.cite\logs\bootstrap.log" 2>&1"
 ```
 
-Schedule at e.g. 01:00 (a random delay per machine is still a good idea to spread the load).
+Configure this task with **Run whether user is logged on or not** and schedule
+it *after* `cite sync` (e.g. 01:15 against sync's 01:00). Running it second lets
+it pick up a renewal that sync just applied — or that was applied by hand — and
+send the confirmation email the same night. The existing command line does not
+need a `--no-sync` flag; headless mode is the default. `--sync` remains
+available as an explicit legacy override.
 
-On most days both steps exit cleanly — no renewal detected, license not yet within the 14-day window — net effect: a quick log line and exit 0.
+On most days all steps exit cleanly—no renewal detected and the license is not
+yet within the 14-day window—so the net effect is a quick log line and exit 0.
 
 **Optional overrides:**
 
@@ -176,6 +187,45 @@ uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite renew `
 ```
 
 `--force` bypasses the renewal-window check; `--dry-run` skips the POST and the `.c2l` generation. Nothing is submitted or written.
+
+---
+
+### `cite sync` — interactive synchronization task
+
+Beginning 48 hours after a real Nikon submission, starts License Manager
+invisibly and invokes its Synchronize action. It exits successfully without
+opening License Manager when no synchronization is due. A real attempt records
+its timestamp so retries occur every two days.
+
+The vendor does not expose Synchronize as a native command-line switch, so this
+command requires an interactive Windows desktop. Configure the task with **Run
+only when user is logged on**, using the same Windows account as `cite renew`.
+Locking the workstation is supported; signing out is not. Give the task a daily
+trigger and, optionally, an **At log on** trigger delayed by 1–2 minutes.
+
+Schedule it *before* the daily `cite renew`, with no random delay so that
+ordering always holds. `cite sync` only sends the confirmation email when its own
+synchronization advanced ACC; a renewal applied by any other route is reported by
+`cite renew`, so running renew second keeps that detection within the same night.
+
+**Task Scheduler arguments** (runs daily, e.g. 01:00):
+
+```bat
+/c "tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<path/to/uv.exe>" tool run --refresh --from git+https://github.com/CITE-HMS/cite-cli cite sync > "%USERPROFILE%\.cite\logs\bootstrap-sync.log" 2>&1"
+```
+
+The automatic action uses `%PUBLIC%\NIS_Elements\licmgr_s.exe` by default.
+Set `CITE_LICENSE_MANAGER_EXE` to a different full path when needed. ACC—not
+the GUI status—is the success gate. A launch failure, confirmed License Manager
+failure, or post-sync ACC verification failure exits non-zero and sends the
+standard failure alert when SMTP alerts are configured. Successful-looking
+syncs that leave ACC unchanged remain pending; after 6+ days they are escalated
+as stalled.
+
+Note that a task configured **Run only when user is logged on** does not fail
+when nobody is signed in — Task Scheduler simply never starts it, so no exit
+code and no alert are produced. `cite renew` covers that blind spot: see step 3
+above.
 
 ---
 
@@ -228,7 +278,7 @@ cite clean [DIRECTORY] [OPTIONS]
 
 ### `cite renew`
 
-Submit the NIS-Elements Time-DEMO license renewal form to Nikon when the license is within the renewal window.
+Monitor the NIS-Elements Time-DEMO license, submit to Nikon within the renewal window, and send the success email only after ACC reports a later expiration. GUI synchronization is disabled by default so the command can run without a logged-on Windows session. Also alerts when the separate `cite sync` task has not run for 4 days while a submission is pending.
 
 ```
 cite renew --email EMAIL --full-name NAME --url TARGET [OPTIONS]
@@ -244,6 +294,19 @@ cite renew --email EMAIL --full-name NAME --url TARGET [OPTIONS]
 | `--days-before` | | `14` | | Submit only when the license expires within this many days. |
 | `--dry-run` | `-n` | `False` | | Print what would be submitted without making any HTTP request or generating a `.c2l`. |
 | `--force` | `-f` | `False` | | Submit even if the license is outside the renewal window or was already submitted this cycle. |
+| `--sync` / `--no-sync` | | `--no-sync` | | Opt into the legacy combined workflow that also runs a due GUI synchronization. Prefer a separate scheduled `cite sync`. |
+
+---
+
+### `cite sync`
+
+Synchronize a pending Nikon renewal when its two-day retry interval is due.
+Reads and updates `%USERPROFILE%\.cite\renew_state.json`; otherwise exits as a
+successful no-op. Requires Windows and an interactive logged-on session.
+
+```text
+cite sync
+```
 
 ---
 
@@ -287,6 +350,27 @@ Example output:
 ```text
 [2026-05-14 ...] License expires 2026-06-05 (22 days left).
 HASP ID: 159918744
+```
+
+---
+
+### `cite sync-license`
+
+Manually force the hidden License Manager Synchronize action. Useful for testing the adapter on a given machine/HASP scope without waiting for a pending submission to become due — unlike `cite sync`, it doesn't touch `renew_state.json` and doesn't send alert emails.
+
+```
+cite sync-license [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--hasp-id` | _(local ACC)_ | HASP key ID to synchronize. If omitted, reads the current one from the local ACC. |
+| `--timeout` | `180` | Seconds to wait for the License Manager Synchronize dialog. |
+
+Requires Windows and `%PUBLIC%\NIS_Elements\licmgr_s.exe` (or `CITE_LICENSE_MANAGER_EXE`). Prints the raw synchronization status/message and exits non-zero on failure, so it's safe to run once per station to confirm the adapter works there:
+
+```powershell
+uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite sync-license
 ```
 
 ---
