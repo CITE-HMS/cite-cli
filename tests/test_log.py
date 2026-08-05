@@ -84,6 +84,47 @@ def test_tee_handles_unicode_with_legacy_windows_encoding(tmp_path: Path) -> Non
     assert "2026-01-01 → 2027-01-01" in log_file.read_text(encoding="utf-8")
 
 
+def test_tee_tolerates_closed_log_stream(tmp_path: Path) -> None:
+    """A closed log file must not break terminal output.
+
+    See `test_cli_exits_zero_after_logging` for why this matters.
+    """
+    import io
+
+    buf = io.StringIO()
+    log_file = (tmp_path / "closed.log").open("w", encoding="utf-8")
+    tee = _Tee(buf, log_file)
+    log_file.close()
+
+    tee.write("after close\n")
+    tee.flush()
+
+    assert "after close" in buf.getvalue()
+
+
+def test_cli_exits_zero_after_logging(tmp_path: Path) -> None:
+    """A successful scheduled run must report exit code 0 to Task Scheduler.
+
+    logging's own atexit hook closes the rotating handler's stream before the
+    interpreter performs its final flush of sys.stdout. If the Tee let that
+    flush raise, CPython would replace the real status with exit code 120 —
+    making every `cite` run look failed in Task Scheduler's result column.
+    """
+    import os
+    import subprocess
+
+    # `sync` against an empty home is a self-contained no-op: no ACC, no SMTP.
+    env = {**os.environ, "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
+    proc = subprocess.run(
+        [sys.executable, "-m", "cite", "sync"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert "No pending renewal to synchronize" in proc.stdout
+    assert proc.returncode == 0, f"{proc.returncode}: {proc.stdout}{proc.stderr}"
+
+
 # ---------------------------------------------------------------------------
 # init_logging
 # ---------------------------------------------------------------------------

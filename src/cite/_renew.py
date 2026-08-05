@@ -40,6 +40,7 @@ RENEW_STATE_PATH = Path.home() / ".cite" / "renew_state.json"
 GENERATED_C2L_PATH = Path.home() / ".cite" / "generated_request.c2l"
 LAST_NOTIFIED_PATH = Path.home() / ".cite" / "last_notified_renewal.json"
 LAST_URGENCY_PATH = Path.home() / ".cite" / "last_urgency_alert.json"
+LAST_SYNC_ALERT_PATH = Path.home() / ".cite" / "last_sync_alert.json"
 LAST_HASP_ID_PATH = Path.home() / ".cite" / "last_hasp_id.txt"
 LICENSE_SYNC_SCRIPT_PATH = Path(__file__).with_name("_sync_license.ps1")
 
@@ -47,6 +48,12 @@ LICENSE_SYNC_INTERVAL = timedelta(days=2)
 # How long a submission may go through successful-looking syncs without ACC
 # confirming a new expiration before it's treated as stalled and alerted on.
 LICENSE_SYNC_STALL_THRESHOLD = timedelta(days=6)
+# Two consecutive missed retry windows: `cite sync` is not running at all,
+# usually because nobody is logged on to the station.
+LICENSE_SYNC_MISSING_THRESHOLD = timedelta(days=4)
+# The condition persists for days, so nag on alternate nights rather than
+# every night — `renew` already emails daily once expiry is imminent.
+LICENSE_SYNC_ALERT_THROTTLE = timedelta(hours=48)
 DEFAULT_LICENSE_MANAGER_EXE = Path(r"%PUBLIC%\NIS_Elements\licmgr_s.exe")
 
 # Standard install locations for Nikon's HASP Update tool. The user can
@@ -326,10 +333,8 @@ def save_last_notified(info: LicenseInfo, path: Path | None = None) -> None:
     _atomic_replace(tmp, path)
 
 
-def load_last_urgency(path: Path | None = None) -> datetime | None:
-    """Return the timestamp of the last urgency alert, or None if never sent."""
-    if path is None:
-        path = LAST_URGENCY_PATH
+def _load_alert_timestamp(path: Path) -> datetime | None:
+    """Return a persisted alert timestamp, or None if never sent/unreadable."""
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -341,16 +346,34 @@ def load_last_urgency(path: Path | None = None) -> datetime | None:
         return None
 
 
-def save_last_urgency(sent_at: datetime, path: Path | None = None) -> None:
-    """Atomically persist the urgency-alert timestamp."""
-    if path is None:
-        path = LAST_URGENCY_PATH
+def _save_alert_timestamp(path: Path, sent_at: datetime) -> None:
+    """Atomically persist an alert timestamp."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(
         json.dumps({"sent_at": sent_at.isoformat()}, indent=2), encoding="utf-8"
     )
     _atomic_replace(tmp, path)
+
+
+def load_last_urgency(path: Path | None = None) -> datetime | None:
+    """Return the timestamp of the last urgency alert, or None if never sent."""
+    return _load_alert_timestamp(path or LAST_URGENCY_PATH)
+
+
+def save_last_urgency(sent_at: datetime, path: Path | None = None) -> None:
+    """Atomically persist the urgency-alert timestamp."""
+    _save_alert_timestamp(path or LAST_URGENCY_PATH, sent_at)
+
+
+def load_last_sync_alert(path: Path | None = None) -> datetime | None:
+    """Return the timestamp of the last 'sync not running' alert, or None."""
+    return _load_alert_timestamp(path or LAST_SYNC_ALERT_PATH)
+
+
+def save_last_sync_alert(sent_at: datetime, path: Path | None = None) -> None:
+    """Atomically persist the 'sync not running' alert timestamp."""
+    _save_alert_timestamp(path or LAST_SYNC_ALERT_PATH, sent_at)
 
 
 def should_renew(expiration_date: date, days_before: int) -> bool:
@@ -385,11 +408,41 @@ def license_sync_due(
     return _as_utc(now) >= _as_utc(anchor) + interval
 
 
+def license_sync_overdue(
+    state: RenewState,
+    *,
+    now: datetime | None = None,
+    threshold: timedelta = LICENSE_SYNC_MISSING_THRESHOLD,
+) -> bool:
+    """Return whether synchronization has not even been *attempted* in a while.
+
+    `license_sync_due` drives the 2-day retry from the interactive `cite sync`
+    task; this reports that the task itself never ran — most often because
+    nobody is logged on to the station, in which case Task Scheduler silently
+    skips it and no failure is ever reported. The headless `renew` task is the
+    only one guaranteed to run, so it uses this to raise the flag.
+    """
+    if state.url != DEFAULT_URL:
+        return False
+    if now is None:
+        now = datetime.now(timezone.utc)
+    anchor = state.last_sync_attempted_at or state.submitted_at
+    return _as_utc(now) >= _as_utc(anchor) + threshold
+
+
 def discover_license_manager_exe() -> Path | None:
     """Locate the self-extracting NIS-Elements License Manager executable."""
     override = os.environ.get("CITE_LICENSE_MANAGER_EXE")
-    configured_path = override or str(DEFAULT_LICENSE_MANAGER_EXE)
-    candidate = Path(os.path.expandvars(configured_path)).expanduser()
+    public = os.environ.get("PUBLIC")
+    if override:
+        candidate = Path(os.path.expandvars(override))
+    elif public:
+        # Build from components rather than parsing the backslash-based default
+        # so management tools and tests get the same result on every platform.
+        candidate = Path(public) / "NIS_Elements" / "licmgr_s.exe"
+    else:
+        candidate = Path(os.path.expandvars(str(DEFAULT_LICENSE_MANAGER_EXE)))
+    candidate = candidate.expanduser()
     return candidate if candidate.is_file() else None
 
 

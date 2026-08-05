@@ -112,6 +112,14 @@ def _isolate_urgency_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.fixture(autouse=True)
+def _isolate_sync_alert_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirect LAST_SYNC_ALERT_PATH so tests never touch .cite/last_sync_alert.json."""
+    monkeypatch.setattr(
+        _renew, "LAST_SYNC_ALERT_PATH", tmp_path / "last_sync_alert.json"
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_last_notified_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

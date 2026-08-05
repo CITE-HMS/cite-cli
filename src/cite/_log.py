@@ -43,7 +43,14 @@ class _Tee:
         self._log: Any = log_file
 
     def write(self, s: str) -> int:
-        self._log.write(_ANSI_RE.sub("", s))
+        # logging's own atexit hook closes the handler's stream before the
+        # interpreter's final flush of sys.stdout/stderr.  A closed log must
+        # never break terminal output or the process exit code (a raising
+        # flush at shutdown makes CPython exit 120 instead of 0).
+        try:
+            self._log.write(_ANSI_RE.sub("", s))
+        except ValueError:
+            pass
 
         # A scheduled task on Windows can expose stdout/stderr as a legacy
         # code-page stream (commonly cp1252) rather than a Unicode-capable
@@ -60,7 +67,10 @@ class _Tee:
         return self._stream.write(s)  # type: ignore[no-any-return]
 
     def flush(self) -> None:
-        self._log.flush()
+        try:
+            self._log.flush()
+        except ValueError:
+            pass
         self._stream.flush()
 
     def fileno(self) -> int:
