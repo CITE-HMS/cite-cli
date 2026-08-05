@@ -73,6 +73,25 @@ Get-LocalUser cite-automation
 ⚠️ `-PasswordNeverExpires` matters. If this password ever expires or is changed,
 auto-login silently stops and the sync leg goes quiet until someone notices.
 
+☐ **Grant "Log on as a batch job".** The `cite renew` task runs with *Run
+whether user is logged on or not*, which Windows starts as a **batch logon**. By
+default only Administrators and Backup Operators hold that right, so a standard
+account must be given it explicitly:
+
+1. `Win+R` → `secpol.msc`
+2. **Local Policies** → **User Rights Assignment**
+3. Double-click **Log on as a batch job**
+4. **Add User or Group…** → type `cite-automation` → **Check Names** → **OK**
+
+⚠️ Skip this and saving the `cite-cli renew` task in Phase 7 fails with
+*"This task requires that the user account specified has Log on as batch job
+rights."* Task Scheduler usually grants the right on its own, but cannot when
+Group Policy manages it — which is why doing it up front is safer.
+
+ℹ️ `secpol.msc` does not exist on Windows **Home** editions. There, either add
+`cite-automation` to the local **Backup Operators** group (which already holds
+the right) or grant it with `secedit` export/import.
+
 ℹ️ It starts as a **standard user** (the `Users` group). Phase 4 tests whether
 that is enough; if not, you will promote it there.
 
@@ -251,7 +270,7 @@ Register-ScheduledTask -TaskName "cite-cli lock-on-logon" -Action $A -Trigger $T
 ℹ️ Two triggers because locking too early can silently do nothing. The second is
 the safety net; locking an already-locked session is a harmless no-op.
 
-☐ **Screen saver safety net.** Logged in as `cite-automation`, run
+☐ **Screen saver safety net.** Logged in as `cite-automation`, run (`Win+R`)
 `control desk.cpl,,@screensaver` and set **Screen saver: Blank**, **Wait: 1
 minute**, and check **On resume, display logon screen**. This is the only layer
 that Windows enforces continuously, so it catches a station that somehow missed
@@ -295,7 +314,8 @@ delete other users' acquisition data.
 - **Arguments**:
 
 ```
-/c "tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<uv>" tool run --refresh --from git+https://github.com/CITE-HMS/cite-cli cite sync > "%USERPROFILE%\.cite\logs\bootstrap-sync.log" 2>&1"
+/c "tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<uv>" tool run --refresh --from git+https://github.com/CITE-HMS/cite-cli cite sync > "%USERPROFILE%\.cite\logs\bootstrap.log" 2>&1"
+
 ```
 
 ⚠️ The **no random delay** is not optional — `sync` must stay ahead of `renew`.
@@ -315,6 +335,10 @@ delete other users' acquisition data.
 ℹ️ Saving a "Run whether user is logged on or not" task asks for that account's
 password. That is expected — Windows needs it to start the task in the
 background.
+
+⚠️ If saving fails with *"This task requires that the user account specified has
+Log on as batch job rights"*, the `secpol.msc` step in **Phase 1** was skipped.
+Grant the right, then save again.
 
 **Resulting schedule:**
 
@@ -385,6 +409,108 @@ The station will email you when:
 
 See the [email reference](./Auto-Update%20of%20Element%20License.md) for the full
 list and what each one means.
+
+---
+
+## Troubleshooting
+
+Problems seen on real stations, with the fix. Most are one-time per PC.
+
+### `New-LocalUser : Access denied.`
+
+**Cause:** the PowerShell window is not **elevated**. Being logged in *as* an
+administrator is not the same thing — UAC still requires an explicitly elevated
+prompt.
+
+**Tells:** an elevated window's title bar reads `Administrator: Windows
+PowerShell`, and it opens in `C:\Windows\system32` rather than
+`C:\Users\<you>`. If your prompt shows your home folder, it is not elevated.
+
+**Fix:** right-click PowerShell → **Run as administrator**. Verify with:
+
+```
+([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+```
+
+It must print `True`. If it prints `True` and access is *still* denied, confirm
+the account is in the local admins group with `net localgroup Administrators`;
+on a domain-joined station, policy can also block local account creation.
+
+### "This task requires that the user account specified has Log on as batch job rights."
+
+**Cause:** saving a task set to **Run whether user is logged on or not** starts
+it as a *batch logon*, and by default only Administrators and Backup Operators
+hold that right. Task Scheduler normally grants it automatically, but cannot
+when Group Policy manages it.
+
+**Affects:** the `cite-cli renew` task only. `cite-cli sync` uses an
+*interactive* logon, and `cite-cli clean` runs as `Admin`, who already has the
+right.
+
+**Fix:** `secpol.msc` → **Local Policies** → **User Rights Assignment** →
+**Log on as a batch job** → **Add User or Group…** → `cite-automation`. Then
+save the task again (it re-asks for the password). This is Phase 1's grant step.
+
+ℹ️ On Windows **Home** there is no `secpol.msc` — add `cite-automation` to the
+local **Backup Operators** group instead, which already holds the right.
+
+### The `netplwiz` auto-login checkbox is missing
+
+**Cause:** current Windows 10/11 hide it by default.
+
+**Fix:** run the Phase 5 `DevicePasswordLessBuildVersion` command, then close
+and reopen `netplwiz`. If it is still absent (some domain-joined
+configurations), use [Sysinternals Autologon](https://learn.microsoft.com/sysinternals/downloads/autologon)
+instead — equally secure, same underlying mechanism.
+
+### The station stops at the BitLocker PIN screen after a reboot
+
+**Cause:** BitLocker in **TPM + PIN** mode asks for a PIN before Windows starts
+loading. Auto-login only answers the *Windows* sign-in screen and cannot help.
+
+**Fix:** there is no software workaround — either move that station to TPM-only
+unlock, or accept that `cite sync` runs only when someone is physically present.
+Check the mode with `manage-bde -status C:` (Phase 0).
+
+### No emails ever arrive
+
+**Cause:** almost always the alert variables were set with plain `setx` (current
+account only) instead of `setx /M` (machine-wide). Alerting then **silently
+no-ops** — there is no error in any log.
+
+**Fix:** redo Phase 2 with `/M` from an elevated prompt, then verify from
+**both** accounts:
+
+```
+uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite test-alert
+```
+
+An email must arrive under `Admin` *and* under `cite-automation`.
+
+### `uvx` is not recognised under one of the accounts
+
+**Cause:** `uv` installs per profile. It was installed for one account only.
+
+**Fix:** log in as the account that is missing it and install `uv` again
+(Phase 3). Each account has its own `uv.exe` path — give every task **its own
+account's** path, never the other's.
+
+### A task shows Last Run Result `0x1`
+
+The command ran and failed. Open that account's log — `renew`/`sync` under
+`C:\Users\cite-automation\.cite\logs\`, `clean` under
+`C:\Users\Admin\.cite\logs\` — and read the last entries in `cite.log`. A
+failure email should also have been sent; if not, see "No emails ever arrive".
+
+### The station is on the desktop, not the lock screen, after a reboot
+
+**Cause:** the `cite-cli lock-on-logon` task did not fire, or fired before the
+session was ready.
+
+**Fix:** confirm the task exists with **both** triggers (5 s and 15 s) and that
+"Run with highest privileges" is **un**checked. Raise both delays if the station
+is slow. The Phase 6 screen-saver setting is the backstop — verify **On resume,
+display logon screen** is checked.
 
 ---
 
