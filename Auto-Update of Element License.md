@@ -2,6 +2,12 @@
 
 This page explains how to configure **Task Scheduler** to run [**cite cli**](https://github.com/CITE-HMS/cite-cli) commands to **semi-automate** the **renewal** of the **Elements** license and to **keep track of the changes** in this [Google Sheet](https://docs.google.com/spreadsheets/d/1AkgeEjVUKQfCCow-crwRODXnvROrxp8GMcWObHJ0Oao/edit?gid=0#gid=0).
 
+➡️ **Setting up a station for the first time?** Follow
+[Station Setup Step-by-Step.md](./Station%20Setup%20Step-by-Step.md) instead —
+it is an ordered checklist from creating the Windows account through the final
+reboot test. This page is the reference for **why** each piece is configured the
+way it is, and what every email means.
+
 **Three commands are scheduled** in a typical deployment, split across **two
 Windows accounts**:
 
@@ -63,15 +69,23 @@ it may overlap the others harmlessly.
 
 # Prerequisites
 
-1. Install `uv`: <https://docs.astral.sh/uv/getting-started/installation/> and note where `uv.exe` lands. You can run `where.exe uv` in PowerShell to see the path (e.g. `C:\Users\User\.local\bin\uv.exe`).
+1. Install `uv`: <https://docs.astral.sh/uv/getting-started/installation/> and note where `uv.exe` lands. You can run `where.exe uv` in PowerShell to see the path (e.g. `C:\Users\Admin\.local\bin\uv.exe`).
 2. Install `git`: <https://git-scm.com/install/>. You can check if it installed with `git --version` in PowerShell.
 
 ⚠️ NOTE: `uv` installs into the **profile of the account that runs the
-installer** (`C:\Users\<account>\.local\bin\uv.exe`). Since the tasks are split
-across two accounts, install it **once per account** — as `Admin` for `cite
-clean`, and as `cite-automation` for `cite renew` / `cite sync` — and use each
-account's own path in its task definitions. Run `where.exe uv` while logged in
-as that account to get the right one.
+installer**, so install it **once per account** — as `Admin` for `cite clean`,
+and as `cite-automation` for `cite renew` / `cite sync`. Run `where.exe uv`
+while logged in as each account to get its path, and give every task **its own
+account's** path.
+
+⚠️ NOTE: never point a task at the *other* account's `uv.exe`. Besides not being
+readable across profiles, putting `cite-automation`'s path into the `Admin`
+`clean` task would let anyone who compromised the auto-login account swap that
+binary and run code as `Admin`.
+
+ℹ️ NOTE: the uv **cache** is per-account too (`%LOCALAPPDATA%\uv\cache`) — leave
+it that way. The tasks can overlap, and two accounts sharing one cache directory
+causes lock and permission conflicts.
 
 # Why `--refresh`?
 
@@ -183,7 +197,7 @@ Leave everything as it is but:
 - **Settings:**
     - **Program/script**: `C:\Windows\System32\cmd.exe`
     - **Add arguments (optional)**: `/c "tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<path/to/uv.exe>" tool run --refresh --from git+https://github.com/CITE-HMS/cite-cli cite clean -d 25 -f > "%USERPROFILE%\.cite\logs\bootstrap.log" 2>&1"`
-        - ⚠️ `"<path/to/uv.exe>"` replace with the `uv.exe` path (you can run `where.exe uv` in PowerShell to see the path, e.g. `C:\Users\User\.local\bin\uv.exe`).
+        - ⚠️ `"<path/to/uv.exe>"` replace with **this task's own account** `uv.exe` path (run `where.exe uv` while logged in as that account, e.g. `C:\Users\Admin\.local\bin\uv.exe`).
         - ℹ️ `-d 25` deletes files older than 25 days — adjust as needed. `-f` skips the confirmation prompt (required for unattended runs).
         - ℹ️ the line `tasklist | findstr /I nis_ar.exe > nul` ensures the task runs only when Elements is not running (for safety).
 
@@ -237,7 +251,7 @@ Nikon.
 - **Settings:**
     - **Program/script**: `C:\Windows\System32\cmd.exe`
     - **Add arguments (optional)**: `/c "tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<path/to/uv.exe>" tool run --refresh --from git+https://github.com/CITE-HMS/cite-cli cite renew --email citeathms@gmail.com --full-name "Federico Gasparoli" --url nikon > "%USERPROFILE%\.cite\logs\bootstrap.log" 2>&1"`
-        - ⚠️ `"<path/to/uv.exe>"` replace with the `uv.exe` path (you can run `where.exe uv` in PowerShell to see the path, e.g. `C:\Users\User\.local\bin\uv.exe`).
+        - ⚠️ `"<path/to/uv.exe>"` replace with **this task's own account** `uv.exe` path (run `where.exe uv` while logged in as that account, e.g. `C:\Users\Admin\.local\bin\uv.exe`).
         - ⚠️ always use <citeathms@gmail.com> as email
         - ⚠️ you can change the `full-name` flag but keep it between quotes
         - ℹ️ the line `tasklist | findstr /I nis_ar.exe > nul` ensures the task runs only when Elements is not running (for safety).
@@ -321,7 +335,7 @@ at the same time.
 - **Settings:**
     - **Program/script**: `C:\Windows\System32\cmd.exe`
     - **Add arguments (optional)**: `/c "tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<path/to/uv.exe>" tool run --refresh --from git+https://github.com/CITE-HMS/cite-cli cite sync > "%USERPROFILE%\.cite\logs\bootstrap-sync.log" 2>&1"`
-        - ⚠️ `"<path/to/uv.exe>"` replace with the `uv.exe` path (you can run `where.exe uv` in PowerShell to see the path, e.g. `C:\Users\User\.local\bin\uv.exe`).
+        - ⚠️ `"<path/to/uv.exe>"` replace with **this task's own account** `uv.exe` path (run `where.exe uv` while logged in as that account, e.g. `C:\Users\Admin\.local\bin\uv.exe`).
         - ℹ️ the line `tasklist | findstr /I nis_ar.exe > nul` ensures the task runs only when Elements is not running.
 
 **4 - Conditions Tab**
@@ -378,7 +392,7 @@ admin one.
 
 ℹ️ NOTE: `uv` must be installed **for this account** — it lands in that
 profile's `.local\bin`. Note the path with `where.exe uv` while logged in as
-`cite-automation` and use it in both task definitions.
+`cite-automation` and use it in the `renew` and `sync` task definitions.
 
 **2 - Enable auto-login**
 
@@ -563,7 +577,7 @@ Leave everything as it is but:
 - **Settings:**
     - **Program/script**: `C:\Windows\System32\cmd.exe`
     - **Add arguments (optional)**: `/c ""<path/to/uv.exe>" tool run --refresh --from git+https://github.com/CITE-HMS/cite-cli cite notify-renewal > "%USERPROFILE%\.cite\logs\bootstrap.log" 2>&1"`
-        - ⚠️ `"<path/to/uv.exe>"` replace with the `uv.exe` path (you can run `where.exe uv` in PowerShell to see the path, e.g. `C:\Users\User\.local\bin\uv.exe`).
+        - ⚠️ `"<path/to/uv.exe>"` replace with **this task's own account** `uv.exe` path (run `where.exe uv` while logged in as that account, e.g. `C:\Users\Admin\.local\bin\uv.exe`).
 
 **4 - Conditions Tab**
 
