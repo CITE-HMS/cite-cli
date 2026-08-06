@@ -27,9 +27,11 @@ A single command, `cite`, run unattended from Windows Task Scheduler on each sta
 
 | Command | Runs as | When | Purpose |
 | --- | --- | --- | --- |
-| `cite clean` | `Admin` | 12:00–1:00 AM | Delete old files. Stays on the admin account because it needs rights to delete other users' acquisition data. |
-| `cite sync` | `cite-automation` | 1:00 AM sharp | Apply pending renewals through the GUI-only License Manager. Needs a logged-on session. |
-| `cite renew` | `cite-automation` | 1:15–2:15 AM | Headlessly detect completed renewals, submit new requests to Nikon, and watch the sync leg. |
+| `cite clean` | `Admin` | 12:00–1:00 AM | Delete old files |
+| `cite sync` | `cite-automation` | 1:00 AM sharp | Apply pending renewals |
+| `cite renew` | `cite-automation` | 1:15–2:15 AM | Submit renewals, detect applied ones |
+
+`cite clean` stays on the admin account because it needs the rights to delete other users' acquisition data. `cite sync` drives the GUI-only License Manager, so it needs a logged-on session, while `cite renew` also watches the sync leg and reports when it stops running.
 
 A fourth task, `cite-cli lock-on-logon`, is not a `cite` command — it locks the desktop right after the automatic login, so the station never sits unlocked.
 
