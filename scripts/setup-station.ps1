@@ -366,7 +366,7 @@ Add-CiteTask -name 'cite-cli renew' -user $automationUser -password (Get-Plain $
 Write-Host @"
 
 Left to do by hand:
-  1. Run each task once in Task Scheduler - Last Run Result must be 0x0.
+  1. Make sure the CITE Automation user is logged in and in the Admin account and run each task once in Task Scheduler - Last Run Result must be 0x0.
   2. Check an alert email arrives under BOTH accounts:
      uvx --from "$RepoUrl" cite test-alert
   3. Reboot and do not touch it: the station must sign in on its own and land
