@@ -70,7 +70,7 @@ Have these three ready — you will be asked for all of them, whether you run th
 | --- | --- |
 | **Gmail App Password** | Generate at <https://myaccount.google.com/apppasswords>, label it "cite-cli" |
 | `cite-automation` account password |  |
-| `AdminAccount` password | |
+| `Admin` account password | |
 
 The Gmail App Password is a 16-character string, **not** the real password of the <citeathms@gmail.com> account, and it requires 2-Step Verification to be enabled on that account. It is what lets a station email you when a renewal lands or a command fails.
 
