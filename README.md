@@ -212,9 +212,9 @@ Still as `Admin`, in the **elevated** PowerShell.
 * [ ] Set all three with `/M` so **both** accounts inherit them:
 
 ```powershell
-setx /M CITE_ALERT_SMTP_USER "citeathms@gmail.com"
-setx /M CITE_ALERT_SMTP_PASSWORD "xxxxxxxxxxxxxxxx"
-setx /M CITE_ALERT_TO "citeathms@gmail.com"
+setx /M CITE_ALERT_SMTP_USER "email@email.com"
+setx /M CITE_ALERT_SMTP_PASSWORD "xxxx xxxx xxxx xxxx"
+setx /M CITE_ALERT_TO "email@email.com"
 ```
 
 **The `/M` is the whole point.** Plain `setx` writes to the current account only. Since `clean` runs as `Admin` and `renew`/`sync` run as `cite-automation`, a per-user variable leaves one of them unable to email anything — and it fails **silently**, with no error in any log.
