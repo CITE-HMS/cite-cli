@@ -117,7 +117,7 @@ If one station needs different values — another retention window, a different 
 
 ```powershell
 $AutomationAccount = 'account name'
-$Email             = 'ema.@emal.com'
+$Email             = 'email.@email.com'
 $FullName          = 'Name'
 $CleanDays         = 25
 $RepoUrl           = 'git+https://github.com/CITE-HMS/cite-cli'
