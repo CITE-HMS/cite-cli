@@ -72,7 +72,7 @@ Have these three ready — you will be asked for all of them, whether you run th
 | `cite-automation` account password |  |
 | `Admin` account password | |
 
-The Gmail App Password is a 16-character string, **not** the real password of the <citeathms@gmail.com> account, and it requires 2-Step Verification to be enabled on that account. It is what lets a station email you when a renewal lands or a command fails.
+The Gmail App Password is a 16-character string, and it requires 2-Step Verification to be enabled on that account. It is what lets a station email you when a renewal lands or a command fails.
 
 Google displays it as four groups of four (`abcd efgh ijkl mnop`). Those spaces are only for readability and are **not** part of the password — at the script's prompt, type or paste it either way, it strips them.
 
@@ -99,7 +99,7 @@ powershell -ExecutionPolicy Bypass -File .\setup-station.ps1
 
 Here `Unblock-File` clears the "downloaded from the internet" mark and `-ExecutionPolicy Bypass` gets past the default policy, which otherwise refuses with *"cannot be loaded because running scripts is disabled on this system"*.
 
-Either way it asks for the **three passwords** above, then prints what it did. The prompts are masked, and the app password goes straight into the machine-wide `CITE_ALERT_SMTP_PASSWORD` variable — nothing is written to a file.
+Either way it asks for the **three passwords** above, then prints what it did.
 
 **Re-running is safe.** Existing accounts are reused and tasks are replaced, so a run that failed halfway is fixed by running it again. A task of the same name is replaced **without asking** (task names are unique, so there is no "keep both"); each line says which happened — `created` or `replaced the existing one`.
 
@@ -108,17 +108,17 @@ Either way it asks for the **three passwords** above, then prints what it did. T
 The five steps it prints, in order:
 
 1. Creates `cite-automation` (password never expires) and grants it **Log on as a batch job**.
-2. Sets `CITE_ALERT_SMTP_USER`, `CITE_ALERT_SMTP_PASSWORD` and `CITE_ALERT_TO` machine-wide, so both accounts inherit them.
+2. Sets some needed `VARIABLES` machine-wide, so both accounts inherit them.
 3. Installs `uv` for both accounts and creates both `%USERPROFILE%\.cite\logs` folders. It runs as `cite-automation` to do the second half, which also builds that account's profile — so you never have to log into it.
-4. Enables auto-login for `cite-automation`, storing the password as an LSA secret (the same mechanism `netplwiz` and Sysinternals Autologon use — never a plaintext registry value).
+4. Enables auto-login for `cite-automation`, storing the password as an LSA secret.
 5. Registers the four tasks and reports each one.
 
 If one station needs different values — another retention window, a different account name — edit the constants at the top of the script before running it:
 
 ```powershell
-$AutomationAccount = 'cite-automation'
-$Email             = 'citeathms@gmail.com'
-$FullName          = 'Federico Gasparoli'
+$AutomationAccount = 'account name'
+$Email             = 'ema.@emal.com'
+$FullName          = 'Name'
 $CleanDays         = 25
 $RepoUrl           = 'git+https://github.com/CITE-HMS/cite-cli'
 ```
@@ -146,7 +146,7 @@ It should print an expiration date and a HASP ID.
 
 * [ ] Confirm an alert email arrives under **both** accounts:
 
-```powershell
+```power shell
 uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite test-alert
 ```
 
