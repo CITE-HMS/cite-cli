@@ -366,7 +366,8 @@ Add-CiteTask -name 'cite-cli renew' -user $automationUser -password (Get-Plain $
 Write-Host @"
 
 Left to do by hand:
-  1. Make sure the CITE Automation user is logged in and in the Admin account and run each task once in Task Scheduler - Last Run Result must be 0x0.
+  1. Make sure that in the Public user there is a folder named `NIS_Elements` that contains the `licmgr_s.exe` file.
+  1. Make sure the `CITE Automation` user is logged in and in the `AdminAccount` account and run each task once in Task Scheduler. Check the log files in `C:\Users\cite-automation\.cite\logs` and `C:\Users\<AdminAccount>\.cite\logs` to ensure they completed successfully.
   2. Check an alert email arrives under BOTH accounts:
      uvx --from "$RepoUrl" cite test-alert
   3. Reboot and do not touch it: the station must sign in on its own and land
