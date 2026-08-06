@@ -55,6 +55,7 @@ Each account installs its own `uv`, and each task points at **its own account's*
 1. Windows 10/11.
 2. [`uv`](https://docs.astral.sh/uv/getting-started/installation/) — installed per account. Note where `uv.exe` lands (e.g. `C:\Users\Admin\.local\bin\uv.exe`).
 3. [`git`](https://git-scm.com/install/) — check with `git --version`. `uv tool run --from git+…` needs it.
+4. Make sure the NIS Elements `licmgr_s.exe` file exists under the Public Windows User in a folder named `NIS_Elements`.
 
 ---
 
@@ -69,8 +70,9 @@ Have these three ready — you will be asked for all of them, whether you run th
 | Value | How to get it |
 | --- | --- |
 | **Gmail App Password** | Generate at <https://myaccount.google.com/apppasswords>, label it "cite-cli" |
-| `cite-automation` account password |  |
-| `Admin` account password | |
+| `cite-automation` password | The one you set during the setup |
+| `Admin` password | The one you logged in with |
+| `licmgr_s.exe` | Make sure it exists under the Public Windows User in a folder named `NIS_Elements` |
 
 The Gmail App Password is a 16-character string, and it requires 2-Step Verification to be enabled on that account. It is what lets a station email you when a renewal lands or a command fails.
 
