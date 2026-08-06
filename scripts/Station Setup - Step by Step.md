@@ -57,6 +57,8 @@ Have these ready before you start — you will be asked for them, whether you ru
 
 The Gmail App Password is a 16-character string, **not** the real password of the \<citeathms@gmail.com\> account. It requires 2-Step Verification to be enabled. Do not write it down here — the script prompts for it (masked), and Phase 2 pastes it once into a machine-wide variable.
 
+Google displays it as four groups of four (`abcd efgh ijkl mnop`). Those spaces are only for readability and are **not** part of the password. At the script's prompt type or paste it either way — it strips them. If you set the variable by hand in Phase 2, leave the spaces out.
+
 ---
 
 # Phase 1 — Create the `cite-automation` account
@@ -107,7 +109,7 @@ Still as `Admin`, in the **elevated** PowerShell.
 
 ```powershell
 setx /M CITE_ALERT_SMTP_USER "citeathms@gmail.com"
-setx /M CITE_ALERT_SMTP_PASSWORD "xxxx xxxx xxxx xxxx"
+setx /M CITE_ALERT_SMTP_PASSWORD "xxxxxxxxxxxxxxxx"
 setx /M CITE_ALERT_TO "citeathms@gmail.com"
 ```
 

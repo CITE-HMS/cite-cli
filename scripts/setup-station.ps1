@@ -65,7 +65,7 @@ Write-Host "  sync/renew run as  : $AutomationAccount"
 
 $AutomationPassword = Read-Host -AsSecureString "Password for '$AutomationAccount' (the standard NIC one)"
 $AdminPassword = Read-Host -AsSecureString "Password for '$AdminAccount' (the clean task needs it)"
-$SmtpPassword = Read-Host -AsSecureString 'Gmail App Password (16 chars, not the account password)'
+$SmtpPassword = Read-Host -AsSecureString 'Gmail App Password (16 chars, not the account password, e.g. xxxx xxxx xxxx xxxx)'
 
 # --- 1. the cite-automation account ---------------------------------------- #
 Phase '1/5  cite-automation account'
@@ -122,8 +122,10 @@ Phase '2/5  email alert variables'
 # Machine scope is the whole point (this is `setx /M`): clean runs as one
 # account and sync/renew as the other. A per-user value leaves one of them
 # unable to email anything, and it fails silently.
+# Google shows the app password in groups of four; the spaces are only for
+# reading. Strip them, so it does not matter how it was typed or pasted.
 foreach ($v in @{ CITE_ALERT_SMTP_USER = $Email
-        CITE_ALERT_SMTP_PASSWORD       = (Get-Plain $SmtpPassword)
+        CITE_ALERT_SMTP_PASSWORD       = ((Get-Plain $SmtpPassword) -replace '\s', '')
         CITE_ALERT_TO                  = $Email
     }.GetEnumerator()) {
     [Environment]::SetEnvironmentVariable($v.Key, $v.Value, 'Machine')
