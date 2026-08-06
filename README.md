@@ -127,8 +127,8 @@ $RepoUrl           = 'git+https://github.com/CITE-HMS/cite-cli'
 
 This part is yours, whichever way you set the station up.
 
-* [ ] Run each task manually: select it in Task Scheduler → **Run** (▶️).
-* [ ] Check **Last Run Result** for each: `0x0` = success, `0x1` = failed.
+* [ ] Make sure the cli-automation user account is logged in (Win + L).
+* [ ] Run each task from the `Admin` user account: select it in Task Scheduler → **Run** (▶️).
 * [ ] Check the logs — remember there are **two** folders:
 
 | Task | Log folder |
