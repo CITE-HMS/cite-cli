@@ -80,9 +80,9 @@ Google displays it as four groups of four (`abcd efgh ijkl mnop`). Those spaces 
 
 ### Run it
 
-* [ ] Log in as `Admin`.
-* [ ] Open PowerShell **as administrator** — right-click the PowerShell icon → **Run as administrator**. The title bar must read `Administrator: Windows PowerShell`.
-* [ ] Run it straight from GitHub — nothing is saved to disk:
+- [ ] Log in as `Admin`.
+- [ ] Open PowerShell **as administrator** — right-click the PowerShell icon → **Run as administrator**. The title bar must read `Administrator: Windows PowerShell`.
+- [ ] Run it straight from GitHub — nothing is saved to disk:
 
 ```powershell
 irm https://raw.githubusercontent.com/CITE-HMS/cite-cli/main/scripts/setup-station.ps1 | iex
@@ -115,6 +115,8 @@ The five steps it prints, in order:
 4. Enables auto-login for `cite-automation`, storing the password as an LSA secret.
 5. Registers the four tasks and reports each one.
 
+It then checks the third-party `PPMS-RT-Client` task, if the station has one. That task is expected to start at logon of the `User` account only — a trigger left on *any user* would also launch it inside the `cite-automation` auto-login session, once per repetition interval. The script only warns; it never modifies that task.
+
 If one station needs different values — another retention window, a different account name — edit the constants at the top of the script before running it:
 
 ```powershell
@@ -129,16 +131,16 @@ $RepoUrl           = 'git+https://github.com/CITE-HMS/cite-cli'
 
 This part is yours, whichever way you set the station up.
 
-* [ ] Make sure the cli-automation user account is logged in (Win + L).
-* [ ] Run each task from the `Admin` user account: select it in Task Scheduler → **Run** (▶️).
-* [ ] Check the logs — remember there are **two** folders:
+- [ ] Make sure the cli-automation user account is logged in (Win + L).
+- [ ] Run each task from the `Admin` user account: select it in Task Scheduler → **Run** (▶️).
+- [ ] Check the logs — remember there are **two** folders:
 
 | Task | Log folder |
 | --- | --- |
 | `renew`, `sync` | `C:\Users\cite-automation\.cite\logs\` |
 | `clean` | `C:\Users\Admin\.cite\logs\` |
 
-* [ ] Confirm the license reads correctly, as `cite-automation`:
+- [ ] Confirm the license reads correctly, as `cite-automation`:
 
 ```powershell
 uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite license
@@ -146,24 +148,24 @@ uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite license
 
 It should print an expiration date and a HASP ID.
 
-* [ ] Confirm an alert email arrives under **both** accounts:
+- [ ] Confirm an alert email arrives under **both** accounts:
 
 ```power shell
 uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite test-alert
 ```
 
-* [ ] **Lock test**: with `cite-automation` logged in, press `Win+L`, then run the `cite-cli sync` task from another session (or from the `Admin` account) and confirm it still completes. This is the behaviour the whole auto-login design depends on.
+- [ ] **Lock test**: with `cite-automation` logged in, press `Win+L`, then run the `cite-cli sync` task from another session (or from the `Admin` account) and confirm it still completes. This is the behaviour the whole auto-login design depends on.
 
 #### The reboot test
 
 This is the one that proves the setup.
 
-* [ ] **Restart the PC and do not touch it.**
-* [ ] It should sign in on its own, show the desktop briefly, and land on the **lock screen** within ~15 seconds.
+- [ ] **Restart the PC and do not touch it.**
+- [ ] It should sign in on its own, show the desktop briefly, and land on the **lock screen** within ~15 seconds.
 
 If it stays on the desktop, the lock task failed — fix that before leaving the station. If it stops at the sign-in screen, auto-login failed.
 
-* [ ] The next morning, confirm `cite sync` and `cite renew` both ran overnight: check `C:\Users\cite-automation\.cite\logs\cite.log` and the Last Run Result of each task.
+- [ ] The next morning, confirm `cite sync` and `cite renew` both ran overnight: check `C:\Users\cite-automation\.cite\logs\cite.log` and the Last Run Result of each task.
 
 ---
 
@@ -183,14 +185,14 @@ Being logged in *as* an administrator is **not** the same as running an *elevate
 
 It must print `True` before you continue.
 
-* [ ] Create the account. It will ask for a password — use the standard NIC one.
+- [ ] Create the account. It will ask for a password — use the standard NIC one.
 
 ```powershell
 New-LocalUser -Name "cite-automation" -Password (Read-Host -AsSecureString "Password") -PasswordNeverExpires -AccountNeverExpires -FullName "CITE automation"
 Add-LocalGroupMember -Group "Users" -Member "cite-automation"
 ```
 
-* [ ] Confirm it exists:
+- [ ] Confirm it exists:
 
 ```powershell
 Get-LocalUser cite-automation
@@ -198,7 +200,7 @@ Get-LocalUser cite-automation
 
 `-PasswordNeverExpires` matters. If this password ever expires or is changed, auto-login silently stops and the sync leg goes quiet until someone notices.
 
-* [ ] Grant **Log on as a batch job**. The `cite renew` task runs with *Run whether user is logged on or not*, which Windows starts as a **batch logon**. By default only Administrators and Backup Operators hold that right, so a standard account must be given it explicitly:
+- [ ] Grant **Log on as a batch job**. The `cite renew` task runs with *Run whether user is logged on or not*, which Windows starts as a **batch logon**. By default only Administrators and Backup Operators hold that right, so a standard account must be given it explicitly:
 
 1. Win+R → `secpol.msc`
 2. **Local Policies** → **User Rights Assignment**
@@ -211,7 +213,7 @@ Skipping this is what produces *"This task requires that the user account specif
 
 Still as `Admin`, in the **elevated** PowerShell.
 
-* [ ] Set all three with `/M` so **both** accounts inherit them:
+- [ ] Set all three with `/M` so **both** accounts inherit them:
 
 ```powershell
 setx /M CITE_ALERT_SMTP_USER "email@email.com"
@@ -223,7 +225,7 @@ setx /M CITE_ALERT_TO "email@email.com"
 
 Type the app password without spaces here: `setx` stores exactly what you give it, and the spaces are not part of the password.
 
-* [ ] Close and reopen PowerShell, then verify:
+- [ ] Close and reopen PowerShell, then verify:
 
 ```powershell
 echo $env:CITE_ALERT_SMTP_USER
@@ -233,27 +235,27 @@ echo $env:CITE_ALERT_SMTP_USER
 
 `uv` installs into the profile of whoever runs the installer, so do it **twice** — once per account.
 
-* [ ] As `Admin`, install `uv`: <https://docs.astral.sh/uv/getting-started/installation/>
-* [ ] Get the `uv` path and copy it somewhere, it will be needed in Phase 6:
+- [ ] As `Admin`, install `uv`: <https://docs.astral.sh/uv/getting-started/installation/>
+- [ ] Get the `uv` path and copy it somewhere, it will be needed in Phase 6:
 
 ```powershell
 where.exe uv
 ```
 
-* [ ] Create this account's log folder:
+- [ ] Create this account's log folder:
 
 ```powershell
 mkdir "$env:USERPROFILE\.cite\logs" -Force
 ```
 
-* [ ] Sign out. Log in as `cite-automation` (first login takes a minute while Windows builds the profile).
-* [ ] Install `uv` again, and record this account's path too:
+- [ ] Sign out. Log in as `cite-automation` (first login takes a minute while Windows builds the profile).
+- [ ] Install `uv` again, and record this account's path too:
 
 ```powershell
 where.exe uv
 ```
 
-* [ ] Create this account's log folder:
+- [ ] Create this account's log folder:
 
 ```powershell
 mkdir "$env:USERPROFILE\.cite\logs" -Force
@@ -263,21 +265,21 @@ Do not skip the two `mkdir` steps or the tasks won't run.
 
 The two paths differ (`C:\Users\Admin\.local\bin\uv.exe` vs `C:\Users\cite-automation\.local\bin\uv.exe`). That is fine and intentional — each account runs its own copy, and neither can tamper with the other's. The uv **cache** is per-account too (`%LOCALAPPDATA%\uv\cache`); leave it that way, because the tasks can overlap and two accounts sharing one cache directory causes lock and permission conflicts.
 
-* [ ] Install `git` if it is not already present: <https://git-scm.com/install/> (check with `git --version`).
+- [ ] Install `git` if it is not already present: <https://git-scm.com/install/> (check with `git --version`).
 
 ### Phase 4 — Enable auto-login for `cite-automation`
 
-* [ ] Log in as `Admin`, elevated PowerShell.
-* [ ] Unhide the auto-login checkbox (needed on current Windows 10/11):
+- [ ] Log in as `Admin`, elevated PowerShell.
+- [ ] Unhide the auto-login checkbox (needed on current Windows 10/11):
 
 ```powershell
 Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device" -Name DevicePasswordLessBuildVersion -Value 0
 ```
 
-* [ ] Press `Win+R`, type `netplwiz`, press **Enter**.
-* [ ] Select `cite-automation` in the list.
-* [ ] Uncheck **Users must enter a user name and password to use this computer**.
-* [ ] Click **Apply**, enter that account's password twice, click **OK**.
+- [ ] Press `Win+R`, type `netplwiz`, press **Enter**.
+- [ ] Select `cite-automation` in the list.
+- [ ] Uncheck **Users must enter a user name and password to use this computer**.
+- [ ] Click **Apply**, enter that account's password twice, click **OK**.
 
 **If the checkbox still is not there** (happens on some domain-joined machines), use [Sysinternals Autologon](https://learn.microsoft.com/sysinternals/downloads/autologon) instead: run `Autologon64.exe` as administrator, enter Username `cite-automation`, Domain = the **computer name**, the password, and click **Enable**. Both methods are equally secure — they store the password as the same encrypted LSA secret.
 
@@ -285,7 +287,7 @@ Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Passw
 
 Without this, the station boots to an unlocked desktop.
 
-* [ ] In **Task Scheduler**, create a task:
+- [ ] In **Task Scheduler**, create a task:
 
 - **General**
     - Name: **cite-cli lock-on-logon**
@@ -303,7 +305,7 @@ Without this, the station boots to an unlocked desktop.
 
 Three triggers because locking too early can silently do nothing. The second and third are the safety net; locking an already-locked session is a harmless no-op.
 
-* [ ] **Screen saver safety net.** Logged in as `cite-automation`, run (`Win+R`) `control desk.cpl,,@screensaver` and set **Screen saver: Blank**, **Wait: 1 minute**, and check **On resume, display logon screen**. This is the only layer that Windows enforces continuously, so it catches a station that somehow missed all three triggers.
+- [ ] **Screen saver safety net.** Logged in as `cite-automation`, run (`Win+R`) `control desk.cpl,,@screensaver` and set **Screen saver: Blank**, **Wait: 1 minute**, and check **On resume, display logon screen**. This is the only layer that Windows enforces continuously, so it catches a station that somehow missed all three triggers.
 
 ### Phase 6 — Create the three scheduled tasks
 

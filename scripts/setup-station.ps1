@@ -8,6 +8,9 @@
 #   4. auto-login as cite-automation, and lock the session right after
 #   5. register the four scheduled tasks: clean, sync, renew, lock-on-logon
 #
+# It then checks the third-party PPMS-RT-Client task, if present, and warns when
+# it is not scoped to the User account - it must not run in the auto-login one.
+#
 # Run ONCE per station, from an ELEVATED PowerShell ("Administrator: Windows
 # PowerShell" in the title bar), logged in as the admin account that should own
 # the `cite clean` task:
@@ -24,6 +27,8 @@ $Email = 'citeathms@gmail.com'    # renewal form, and alert sender + recipient
 $FullName = 'Federico Gasparoli'  # renewal form
 $CleanDays = 25                   # cite clean -d
 $RepoUrl = 'git+https://github.com/CITE-HMS/cite-cli'
+$PpmsTask = 'PPMS-RT-Client'      # third-party task, only checked, never touched
+$PpmsUser = 'User'                # the only account it may start for
 # --------------------------------------------------------------------------- #
 
 $ErrorActionPreference = 'Stop'
@@ -372,6 +377,43 @@ Add-CiteTask -name 'cite-cli renew' -user $automationUser -password (Get-Plain $
     -trigger (New-ScheduledTaskTrigger -Daily -At $midnight.AddMinutes(75) -RandomDelay (New-TimeSpan -Hours 1)) `
     -settings (New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Hours 1))
+
+# --- PPMS-RT-Client -------------------------------------------------------- #
+Phase 'PPMS-RT-Client'
+
+# Not one of our tasks, but it must never run in the auto-login session: it is
+# meant to start at logon of the $PpmsUser account only. A logon trigger left on
+# "any user" would launch it as $AutomationAccount too, once per repetition.
+$ppms = Get-ScheduledTask -TaskName $PpmsTask -ErrorAction SilentlyContinue
+if (-not $ppms) {
+    Ok "no '$PpmsTask' task on this station - nothing to check"
+}
+else {
+    $logon = @($ppms.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' })
+    $other = @($ppms.Triggers | Where-Object { $_.CimClass.CimClassName -ne 'MSFT_TaskLogonTrigger' })
+
+    if (-not $logon) { Warn "'$PpmsTask' has no logon trigger" }
+    foreach ($t in $logon) {
+        if (-not $t.UserId) {
+            Warn "'$PpmsTask' triggers at logon of ANY user - it will also start in the $AutomationAccount session"
+        }
+        elseif (($t.UserId -split '\\')[-1] -ne $PpmsUser) {
+            Warn "'$PpmsTask' triggers at logon of '$($t.UserId)', not '$PpmsUser'"
+        }
+        else { Ok "'$PpmsTask' triggers at logon of '$($t.UserId)'" }
+    }
+    if ($other) {
+        Warn "'$PpmsTask' has $($other.Count) trigger(s) that are not 'at log on' - it should only start at logon of '$PpmsUser'"
+    }
+
+    # A group principal (typically BUILTIN\Users) is fine: the logon trigger is
+    # what decides who it actually runs as.
+    $runsAs = if ($ppms.Principal.UserId) { $ppms.Principal.UserId } else { $ppms.Principal.GroupId }
+    if ($ppms.Principal.UserId -and ($ppms.Principal.UserId -split '\\')[-1] -ne $PpmsUser) {
+        Warn "'$PpmsTask' runs as '$runsAs', not '$PpmsUser'"
+    }
+    else { Ok "'$PpmsTask' runs as '$runsAs'" }
+}
 
 # --- done ------------------------------------------------------------------ #
 Write-Host @"
