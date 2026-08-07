@@ -162,8 +162,12 @@ $bootstrap = @'
 $ErrorActionPreference = 'Stop'
 $cite = Join-Path $env:USERPROFILE '.cite'
 New-Item -ItemType Directory -Force -Path (Join-Path $cite 'logs') | Out-Null
-$result = @{ ok = $false; uv = ''; error = '' }
+$result = @{ ok = $false; uv = ''; git = ''; error = '' }
 try {
+    # uv shells out to git.exe to clone the repo. This account has its own PATH,
+    # so a git installed "for me only" under the admin account is invisible here.
+    $g = Get-Command git.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($g) { $result.git = $g.Source }
     $uv = Join-Path $env:USERPROFILE '.local\bin\uv.exe'
     if (-not (Test-Path $uv)) {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -201,6 +205,13 @@ if (Test-Path $resultFile) {
     $result = Get-Content $resultFile -Raw | ConvertFrom-Json
     if ($result.ok) { $automationUv = $result.uv; Ok "uv for $AutomationAccount : $automationUv" }
     else { Problem "uv install failed for $AutomationAccount : $($result.error)" }
+    if ($result.git) {
+        Ok "git for $AutomationAccount : $($result.git)"
+    }
+    else {
+        Problem "git is not on $AutomationAccount's PATH - the tasks cannot clone the repo"
+        Warn 'install Git for Windows "for all users", or add C:\Program Files\Git\cmd to the MACHINE Path'
+    }
 }
 else { Problem "could not run as $AutomationAccount - log in once and install uv by hand" }
 
