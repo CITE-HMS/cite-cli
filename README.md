@@ -115,6 +115,8 @@ The five steps it prints, in order:
 4. Enables auto-login for `cite-automation`, storing the password as an LSA secret.
 5. Registers the four tasks and reports each one.
 
+It also warns — without changing anything — if **fast user switching** is off. With it hidden, signing in as another user logs `cite-automation` off instead of parking its session, and `cite sync` then has no session to work in until the next reboot.
+
 It then checks the third-party `PPMS-RT-Client` task, if the station has one. That task is expected to start at logon of the `User` account only — a trigger left on *any user* would also launch it inside the `cite-automation` auto-login session, once per repetition interval. The script only warns; it never modifies that task.
 
 If one station needs different values — another retention window, a different account name — edit the constants at the top of the script before running it:
@@ -290,16 +292,16 @@ Without this, the station boots to an unlocked desktop.
 - [ ] In **Task Scheduler**, create a task:
 
 - **General**
-    - Name: **cite-cli lock-on-logon**
-    - **Run only when user is logged on**, user = `cite-automation`
-    - ⚠️ do **not** check "Run with highest privileges"
+  - Name: **cite-cli lock-on-logon**
+  - **Run only when user is logged on**, user = `cite-automation`
+  - ⚠️ do **not** check "Run with highest privileges"
 - **Triggers** — **three**:
-    - **At log on** → Specific user `cite-automation` → **Delay: 5 seconds**
-    - **At log on** → Specific user `cite-automation` → **Delay: 10 seconds**
-    - **At log on** → Specific user `cite-automation` → **Delay: 15 seconds**
+  - **At log on** → Specific user `cite-automation` → **Delay: 5 seconds**
+  - **At log on** → Specific user `cite-automation` → **Delay: 10 seconds**
+  - **At log on** → Specific user `cite-automation` → **Delay: 15 seconds**
 - **Actions**
-    - Start a program → `C:\Windows\System32\rundll32.exe`
-    - Arguments: `user32.dll,LockWorkStation` (no space after the comma)
+  - Start a program → `C:\Windows\System32\rundll32.exe`
+  - Arguments: `user32.dll,LockWorkStation` (no space after the comma)
 - **Conditions**: uncheck everything
 - **Settings**: only **Allow task to be run on demand**
 
@@ -333,8 +335,8 @@ Common settings unless stated otherwise:
 
 - **General**: `cite-automation` · **Run only when user is logged on** · **Run with highest privileges**
 - **Triggers** — **two**:
-    - Daily, **1:00:00 AM**, recur every 1 day. ⚠️ **no random delay**
-    - **At log on**, `cite-automation` user, **delay 2 minutes** (catch-up after a reboot)
+  - Daily, **1:00:00 AM**, recur every 1 day. ⚠️ **no random delay**
+  - **At log on**, `cite-automation` user, **delay 2 minutes** (catch-up after a reboot)
 - **Settings**: also check **Run task as soon as possible after a scheduled start is missed**, and set **If the task is already running** → **Do not start a new instance**
 - **Arguments**:
 

@@ -8,8 +8,9 @@
 #   4. auto-login as cite-automation, and lock the session right after
 #   5. register the four scheduled tasks: clean, sync, renew, lock-on-logon
 #
-# It then checks the third-party PPMS-RT-Client task, if present, and warns when
-# it is not scoped to the User account - it must not run in the auto-login one.
+# It also warns, without changing anything, when fast user switching is off, or
+# when the third-party PPMS-RT-Client task is not scoped to the User account -
+# neither of those may interfere with the auto-login session.
 #
 # Run ONCE per station, from an ELEVATED PowerShell ("Administrator: Windows
 # PowerShell" in the title bar), logged in as the admin account that should own
@@ -303,6 +304,27 @@ $passwordless = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess
 if (-not (Test-Path $passwordless)) { New-Item -Path $passwordless -Force | Out-Null }
 Set-ItemProperty $passwordless -Name DevicePasswordLessBuildVersion -Value 0 -Type DWord
 Ok "auto-login enabled (password kept as an LSA secret)"
+
+# Fast user switching has to stay available: with it off, signing in as another
+# user logs $AutomationAccount OFF instead of leaving its session parked, and
+# `cite sync` then has no interactive session until the next reboot. Reported
+# only - on a domain-joined station a GPO would undo a local change anyway.
+# Both values mean "enabled" when absent, so only an explicit setting is wrong.
+$sysPolicy = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+$hide = (Get-ItemProperty $sysPolicy -Name HideFastUserSwitching -ErrorAction SilentlyContinue).HideFastUserSwitching
+$multiSession = (Get-ItemProperty $winlogon -Name AllowMultipleTSSessions -ErrorAction SilentlyContinue).AllowMultipleTSSessions
+$fusOk = $true
+if ($hide) {
+    Warn "fast user switching is hidden (HideFastUserSwitching = $hide) - signing in as another user would log $AutomationAccount off"
+    Warn "  fix: delete that value under $sysPolicy, or set it to 0"
+    $fusOk = $false
+}
+if ($multiSession -eq 0) {
+    Warn 'fast user switching is off (AllowMultipleTSSessions = 0 in Winlogon)'
+    Warn '  fix: set that value to 1'
+    $fusOk = $false
+}
+if ($fusOk) { Ok 'fast user switching available' }
 
 # --- 5. the four scheduled tasks ------------------------------------------- #
 Phase '5/5  scheduled tasks'
