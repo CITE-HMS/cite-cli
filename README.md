@@ -133,8 +133,8 @@ $RepoUrl           = 'git+https://github.com/CITE-HMS/cite-cli'
 
 This part is yours, whichever way you set the station up.
 
-- [ ] Make sure the cli-automation user account is logged in (Win + L).
-- [ ] Run each task from the `Admin` user account: select it in Task Scheduler → **Run** (▶️).
+- [ ] Make sure the cli-automation user account is logged in (Win + L or switch account).
+- [ ] Run each task from the `Admin` user account: select it in Task Scheduler → **Run** (`renew` first, `sync` after).
 - [ ] Check the logs — remember there are **two** folders:
 
 | Task | Log folder |
@@ -155,8 +155,6 @@ It should print an expiration date and a HASP ID.
 ```power shell
 uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite test-alert
 ```
-
-- [ ] **Lock test**: with `cite-automation` logged in, press `Win+L`, then run the `cite-cli sync` task from another session (or from the `Admin` account) and confirm it still completes. This is the behaviour the whole auto-login design depends on.
 
 #### The reboot test
 
