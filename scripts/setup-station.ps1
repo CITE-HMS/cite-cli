@@ -47,6 +47,19 @@ function Get-Plain {
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }
 }
 
+function Read-PasswordTwice {
+    # Typed twice: a typo in either account password is otherwise only found
+    # much later, and a wrong auto-login password fails silently at reboot.
+    param($prompt)
+    for ($i = 1; $i -le 3; $i++) {
+        $first = Read-Host -AsSecureString $prompt
+        $again = Read-Host -AsSecureString "$prompt - type it again"
+        if ((Get-Plain $first) -ceq (Get-Plain $again)) { return $first }
+        Warn 'the two entries do not match, try again'
+    }
+    throw 'Password confirmation failed three times.'
+}
+
 function Get-ProfilePath {
     param($name)
     try {
@@ -68,8 +81,8 @@ Write-Host "cite-cli station setup on $env:COMPUTERNAME" -ForegroundColor White
 Write-Host "  clean runs as      : $AdminAccount"
 Write-Host "  sync/renew run as  : $AutomationAccount"
 
-$AutomationPassword = Read-Host -AsSecureString "Password for '$AutomationAccount' (the standard NIC one)"
-$AdminPassword = Read-Host -AsSecureString "Password for '$AdminAccount' (the clean task needs it)"
+$AutomationPassword = Read-PasswordTwice "Password for '$AutomationAccount' (the standard CITE one)"
+$AdminPassword = Read-PasswordTwice "Password for '$AdminAccount' (the clean task needs it)"
 $SmtpPassword = Read-Host -AsSecureString 'Gmail App Password (16 chars, not the account password, e.g. xxxx xxxx xxxx xxxx)'
 
 # --- 1. the cite-automation account ---------------------------------------- #
@@ -384,35 +397,47 @@ Phase 'PPMS-RT-Client'
 # Not one of our tasks, but it must never run in the auto-login session: it is
 # meant to start at logon of the $PpmsUser account only. A logon trigger left on
 # "any user" would launch it as $AutomationAccount too, once per repetition.
-$ppms = Get-ScheduledTask -TaskName $PpmsTask -ErrorAction SilentlyContinue
-if (-not $ppms) {
+# Scan every folder, not just the root: `Get-ScheduledTask -TaskName x` misses a
+# task registered under a subfolder. Fall back to a loose match so a task that is
+# merely named differently is still found and reported.
+$allTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue)
+$found = @($allTasks | Where-Object { $_.TaskName -eq $PpmsTask })
+if (-not $found) {
+    $found = @($allTasks | Where-Object { $_.TaskName -like '*PPMS*' })
+    if ($found) {
+        Warn "no task named exactly '$PpmsTask', but found: $(($found | ForEach-Object { $_.TaskPath + $_.TaskName }) -join ', ')"
+    }
+}
+
+if (-not $found) {
     Ok "no '$PpmsTask' task on this station - nothing to check"
 }
-else {
+foreach ($ppms in $found) {
+    $name = "$($ppms.TaskPath)$($ppms.TaskName)"
     $logon = @($ppms.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' })
     $other = @($ppms.Triggers | Where-Object { $_.CimClass.CimClassName -ne 'MSFT_TaskLogonTrigger' })
 
-    if (-not $logon) { Warn "'$PpmsTask' has no logon trigger" }
+    if (-not $logon) { Warn "'$name' has no logon trigger" }
     foreach ($t in $logon) {
         if (-not $t.UserId) {
-            Warn "'$PpmsTask' triggers at logon of ANY user - it will also start in the $AutomationAccount session"
+            Warn "'$name' triggers at logon of ANY user - it will also start in the $AutomationAccount session"
         }
         elseif (($t.UserId -split '\\')[-1] -ne $PpmsUser) {
-            Warn "'$PpmsTask' triggers at logon of '$($t.UserId)', not '$PpmsUser'"
+            Warn "'$name' triggers at logon of '$($t.UserId)', not '$PpmsUser'"
         }
-        else { Ok "'$PpmsTask' triggers at logon of '$($t.UserId)'" }
+        else { Ok "'$name' triggers at logon of '$($t.UserId)'" }
     }
     if ($other) {
-        Warn "'$PpmsTask' has $($other.Count) trigger(s) that are not 'at log on' - it should only start at logon of '$PpmsUser'"
+        Warn "'$name' has $($other.Count) trigger(s) that are not 'at log on' - it should only start at logon of '$PpmsUser'"
     }
 
     # A group principal (typically BUILTIN\Users) is fine: the logon trigger is
     # what decides who it actually runs as.
     $runsAs = if ($ppms.Principal.UserId) { $ppms.Principal.UserId } else { $ppms.Principal.GroupId }
     if ($ppms.Principal.UserId -and ($ppms.Principal.UserId -split '\\')[-1] -ne $PpmsUser) {
-        Warn "'$PpmsTask' runs as '$runsAs', not '$PpmsUser'"
+        Warn "'$name' runs as '$runsAs', not '$PpmsUser'"
     }
-    else { Ok "'$PpmsTask' runs as '$runsAs'" }
+    else { Ok "'$name' runs as '$runsAs'" }
 }
 
 # --- done ------------------------------------------------------------------ #
