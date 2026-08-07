@@ -40,6 +40,7 @@ function Phase { param($m) Write-Host "`n=== $m ===" -ForegroundColor Cyan }
 function Ok { param($m) Write-Host "  [ok] $m" -ForegroundColor Green }
 function Warn { param($m) Write-Host "  [!!] $m" -ForegroundColor Yellow }
 function Problem { param($m) Write-Host "  [!!] $m" -ForegroundColor Red; $script:Problems++ }
+function Note { param($m) Write-Host "       $m" -ForegroundColor Yellow }
 
 function Get-Plain {
     param([securestring]$s)
@@ -315,13 +316,27 @@ $hide = (Get-ItemProperty $sysPolicy -Name HideFastUserSwitching -ErrorAction Si
 $multiSession = (Get-ItemProperty $winlogon -Name AllowMultipleTSSessions -ErrorAction SilentlyContinue).AllowMultipleTSSessions
 $fusOk = $true
 if ($hide) {
-    Warn "fast user switching is hidden (HideFastUserSwitching = $hide) - signing in as another user would log $AutomationAccount off"
-    Warn "  fix: delete that value under $sysPolicy, or set it to 0"
+    Warn "fast user switching is hidden (HideFastUserSwitching = $hide)"
+    Note "signing in as another user would log $AutomationAccount off, leaving cite sync"
+    Note 'without a session until the next reboot. To enable it:'
+    Note '  1. Press Win + R, type gpedit.msc, press Enter'
+    Note '  2. Go to Computer Configuration > Administrative Templates > System > Logon'
+    Note '  3. Double-click "Hide entry points for Fast User Switching"'
+    Note '  4. Set it to Not Configured, click OK'
+    Note '  5. Restart the PC'
+    Note '  on Windows Home there is no gpedit.msc: set HideFastUserSwitching to 0'
+    Note "  under $sysPolicy instead"
     $fusOk = $false
 }
 if ($multiSession -eq 0) {
-    Warn 'fast user switching is off (AllowMultipleTSSessions = 0 in Winlogon)'
-    Warn '  fix: set that value to 1'
+    Warn 'fast user switching is off (AllowMultipleTSSessions = 0)'
+    Note 'To enable it:'
+    Note '  1. Press Win + R, type regedit, press Enter'
+    Note '  2. Go to HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    Note '  3. Double-click AllowMultipleTSSessions and set Value data to 1'
+    Note '  4. Restart the PC'
+    Note '  or, from this elevated PowerShell:'
+    Note "     Set-ItemProperty '$winlogon' -Name AllowMultipleTSSessions -Value 1"
     $fusOk = $false
 }
 if ($fusOk) { Ok 'fast user switching available' }
@@ -413,6 +428,19 @@ Add-CiteTask -name 'cite-cli renew' -user $automationUser -password (Get-Plain $
     -settings (New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Hours 1))
 
+# Registering replaces the task at that path only, and task names are unique
+# per folder - so an older copy in a subfolder, or one whose name differs by a
+# stray space, keeps running alongside the four above.
+$ours = 'cite-cli clean', 'cite-cli sync', 'cite-cli renew', 'cite-cli lock-on-logon'
+$strays = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
+        $_.TaskName -like '*cite*' -and -not ($_.TaskPath -eq '\' -and $ours -contains $_.TaskName)
+    })
+foreach ($s in $strays) {
+    Warn "leftover task '$($s.TaskPath)$($s.TaskName)' will run alongside ours"
+    Note "remove it with:"
+    Note "  Unregister-ScheduledTask -TaskName '$($s.TaskName)' -TaskPath '$($s.TaskPath)' -Confirm:`$false"
+}
+
 # --- PPMS-RT-Client -------------------------------------------------------- #
 Phase 'PPMS-RT-Client'
 
@@ -467,7 +495,12 @@ Write-Host @"
 
 Left to do by hand:
   1. Make sure that in the Public user there is a folder named `NIS_Elements` that contains the `licmgr_s.exe` file.
-  1. Make sure the `CITE Automation` user is logged in and in the `AdminAccount` account and run each task once in Task Scheduler. Check the log files in `C:\Users\cite-automation\.cite\logs` and `C:\Users\<AdminAccount>\.cite\logs` to ensure they completed successfully.
+  1. Log in to the `CITE Automation` user and lock it (Win + L or switch user).
+  2. In the `AdminAccount` account, run each task once in Task Scheduler (renew first, sync after) and check the log files in `C:\Users\cite-automation\.cite\logs` and `C:\Users\<AdminAccount>\.cite\logs` to ensure they completed successfully.
+  3. Check an alert email arrives under BOTH accounts:
+     uvx --from "$RepoUrl" cite test-alert
+  4. Reboot and do not touch it: the station must sign in on its own and land
+     on the lock screen within ~15 seconds.
   2. Check an alert email arrives under BOTH accounts:
      uvx --from "$RepoUrl" cite test-alert
   3. Reboot and do not touch it: the station must sign in on its own and land
