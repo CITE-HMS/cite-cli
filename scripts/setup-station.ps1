@@ -18,9 +18,11 @@
 #
 #     powershell -ExecutionPolicy Bypass -File .\setup-station.ps1
 #
-# It asks for three passwords: cite-automation's, this admin account's, and the
-# Gmail App Password. Re-running is safe - accounts are reused, tasks replaced.
-# Only the reboot test is left to do by hand afterwards.
+# It asks for three passwords, each typed twice: cite-automation's, this admin
+# account's, and the Gmail App Password. The first two are checked against
+# Windows as soon as they are typed, so a mistake only costs re-typing that one
+# prompt. Re-running is safe - accounts are reused, tasks replaced. Only the
+# reboot test is left to do by hand afterwards.
 
 # --- edit only if a station differs ---------------------------------------- #
 $AutomationAccount = 'cite-automation'
@@ -52,14 +54,32 @@ function Get-Plain {
 function Read-PasswordTwice {
     # Typed twice: a typo in either account password is otherwise only found
     # much later, and a wrong auto-login password fails silently at reboot.
-    param($prompt)
+    # -StripSpaces ignores spacing differences between the two entries - Gmail
+    # shows its app password in groups of four, and how it was typed or
+    # pasted should not cause a false mismatch.
+    param($prompt, [switch]$StripSpaces)
     for ($i = 1; $i -le 3; $i++) {
         $first = Read-Host -AsSecureString $prompt
         $again = Read-Host -AsSecureString "$prompt - type it again"
-        if ((Get-Plain $first) -ceq (Get-Plain $again)) { return $first }
+        $a = Get-Plain $first
+        $b = Get-Plain $again
+        if ($StripSpaces) { $a = $a -replace '\s', ''; $b = $b -replace '\s', '' }
+        if ($a -ceq $b) {
+            if ($StripSpaces) { return (ConvertTo-SecureString -String $a -AsPlainText -Force) }
+            return $first
+        }
         Warn 'the two entries do not match, try again'
     }
     throw 'Password confirmation failed three times.'
+}
+
+function Test-AccountPassword {
+    param($account, $plainPassword)
+    Add-Type -AssemblyName System.DirectoryServices.AccountManagement
+    $ctx = New-Object DirectoryServices.AccountManagement.PrincipalContext(
+        [DirectoryServices.AccountManagement.ContextType]::Machine, $env:COMPUTERNAME)
+    try { $ctx.ValidateCredentials($account, $plainPassword) }
+    finally { $ctx.Dispose() }
 }
 
 function Get-ProfilePath {
@@ -83,14 +103,36 @@ Write-Host "cite-cli station setup on $env:COMPUTERNAME" -ForegroundColor White
 Write-Host "  clean runs as      : $AdminAccount"
 Write-Host "  sync/renew run as  : $AutomationAccount"
 
-$AutomationPassword = Read-PasswordTwice "Password for '$AutomationAccount' (the standard CITE one)"
-$AdminPassword = Read-PasswordTwice "Password for '$AdminAccount' (the clean task needs it)"
-$SmtpPassword = Read-Host -AsSecureString 'Gmail App Password (16 chars, not the account password, e.g. xxxx xxxx xxxx xxxx)'
+# Each password is checked as soon as it is typed, not after all three are in -
+# so a mistake on one only costs re-typing that one, never the ones after it
+# (in particular, never the 16-char Gmail app password).
+$automationExisted = [bool](Get-LocalUser -Name $AutomationAccount -ErrorAction SilentlyContinue)
+$AutomationPassword = $null
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    $pw = Read-PasswordTwice "Password for '$AutomationAccount' (the standard CITE one)"
+    if (-not $automationExisted -or (Test-AccountPassword $AutomationAccount (Get-Plain $pw))) {
+        $AutomationPassword = $pw
+        break
+    }
+    Warn "that is not $AutomationAccount's current Windows password - it already exists with a different one"
+    Note "(to reset it instead: Set-LocalUser -Name $AutomationAccount -Password (Read-Host -AsSecureString))"
+}
+if (-not $AutomationPassword) { throw "Could not verify $AutomationAccount's password after 3 attempts." }
+
+$AdminPassword = $null
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    $pw = Read-PasswordTwice "Password for '$AdminAccount' (the clean task needs it)"
+    if (Test-AccountPassword $AdminAccount (Get-Plain $pw)) { $AdminPassword = $pw; break }
+    Warn "that is not $AdminAccount's current Windows password - try again"
+}
+if (-not $AdminPassword) { throw "Could not verify $AdminAccount's password after 3 attempts." }
+
+$SmtpPassword = Read-PasswordTwice -StripSpaces 'Gmail App Password (16 chars, not the account password, e.g. xxxx xxxx xxxx xxxx)'
 
 # --- 1. the cite-automation account ---------------------------------------- #
 Phase '1/5  cite-automation account'
 
-if (Get-LocalUser -Name $AutomationAccount -ErrorAction SilentlyContinue) {
+if ($automationExisted) {
     Ok "account already exists"
 }
 else {
@@ -102,17 +144,6 @@ else {
 # and the sync leg goes quiet until someone notices.
 Set-LocalUser -Name $AutomationAccount -PasswordNeverExpires $true
 try { Add-LocalGroupMember -Group 'Users' -Member $AutomationAccount -ErrorAction Stop } catch {}
-
-# A wrong password here would only surface at the reboot test, as an auto-login
-# that quietly does nothing - so check it now.
-Add-Type -AssemblyName System.DirectoryServices.AccountManagement
-$ctx = New-Object DirectoryServices.AccountManagement.PrincipalContext(
-    [DirectoryServices.AccountManagement.ContextType]::Machine, $env:COMPUTERNAME)
-if (-not $ctx.ValidateCredentials($AutomationAccount, (Get-Plain $AutomationPassword))) {
-    throw "That is not the password of '$AutomationAccount'. It already exists with a " +
-    "different one - reset it with: Set-LocalUser -Name $AutomationAccount -Password (Read-Host -AsSecureString)"
-}
-$ctx.Dispose()
 
 # "Log on as a batch job": the renew task runs whether logged on or not, which
 # Windows starts as a batch logon. Only Administrators hold that right by default.
@@ -155,6 +186,8 @@ foreach ($v in @{ CITE_ALERT_SMTP_USER = $Email
 
 # --- 3. uv + log folders, for both accounts -------------------------------- #
 Phase '3/5  uv and log folders'
+
+$automationUser = "$env:COMPUTERNAME\$AutomationAccount"
 
 if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
     Warn 'git not found - `uv tool run --from git+...` needs it: https://git-scm.com/downloads'
@@ -213,12 +246,36 @@ $automationUv = Join-Path (Get-ProfilePath $AutomationAccount) '.local\bin\uv.ex
 # Drop any result from an earlier run, so a failure here cannot read as success.
 Remove-Item (Join-Path (Get-ProfilePath $AutomationAccount) '.cite\setup-result.json') `
     -Force -ErrorAction SilentlyContinue
-$cred = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$AutomationAccount", $AutomationPassword)
+
+# Run the bootstrap as a one-shot scheduled task, not `Start-Process -Credential`.
+# The latter does an interactive-style logon (CreateProcessWithLogonW) that can
+# fail silently for reasons unrelated to the account being fine - Secondary
+# Logon service state, UAC/token quirks, local policy - with no error to catch.
+# A scheduled task uses the batch logon right granted to $AutomationAccount in
+# step 1/5, the same mechanism the real 'cite-cli renew' task relies on below,
+# and it is what reliably creates the profile on a first run.
+$bootTaskName = 'cite-cli-bootstrap-temp'
+Unregister-ScheduledTask -TaskName $bootTaskName -Confirm:$false -ErrorAction SilentlyContinue
+$bootAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument (
+    '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $bootstrapPath + '"')
+$bootSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+Register-ScheduledTask -TaskName $bootTaskName -Action $bootAction -Settings $bootSettings `
+    -User $automationUser -Password (Get-Plain $AutomationPassword) -RunLevel Highest | Out-Null
+
 Write-Host "  running as $AutomationAccount (first run also builds its profile, ~1 min)"
-# -WindowStyle goes to powershell.exe: Start-Process cannot combine its own
-# -WindowStyle with -Credential.
-Start-Process -FilePath 'powershell.exe' -Credential $cred -WorkingDirectory "$env:SystemDrive\" -Wait `
-    -ArgumentList '-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', "`"$bootstrapPath`""
+Start-ScheduledTask -TaskName $bootTaskName
+$deadline = (Get-Date).AddMinutes(3)
+do {
+    Start-Sleep -Seconds 2
+    $state = (Get-ScheduledTask -TaskName $bootTaskName).State
+} while ($state -eq 'Running' -and (Get-Date) -lt $deadline)
+# Grab the exit code before the task is gone - it is the only clue left once
+# it is unregistered, and it is what actually distinguishes "wrong password"
+# from every other way this can fail.
+$lastResult = (Get-ScheduledTaskInfo -TaskName $bootTaskName -ErrorAction SilentlyContinue).LastTaskResult
+Unregister-ScheduledTask -TaskName $bootTaskName -Confirm:$false -ErrorAction SilentlyContinue
+if ($state -eq 'Running') { Warn "$bootTaskName did not finish within 3 minutes - continuing anyway" }
 
 $resultFile = Join-Path (Get-ProfilePath $AutomationAccount) '.cite\setup-result.json'
 if (Test-Path $resultFile) {
@@ -233,7 +290,20 @@ if (Test-Path $resultFile) {
         Warn 'install Git for Windows "for all users", or add C:\Program Files\Git\cmd to the MACHINE Path'
     }
 }
-else { Problem "could not run as $AutomationAccount - log in once and install uv by hand" }
+else {
+    Problem "could not run as $AutomationAccount - the bootstrap task did not produce a result"
+    if ($null -ne $lastResult -and $lastResult -ne 0) {
+        Note ('Task Scheduler last result: 0x{0:X8}' -f $lastResult)
+        if ($lastResult -eq 0x8007052E) {
+            Note "that code means logon failure (bad username/password) - unexpected here, since"
+            Note 'the password was already checked against Windows above. Reset it and retry:'
+            Note "  Set-LocalUser -Name $AutomationAccount -Password (Read-Host -AsSecureString)"
+        }
+    }
+    Note "look up that code, or watch Task Scheduler's History tab live next time - the"
+    Note "temporary task ('$bootTaskName') is removed automatically as soon as it finishes."
+    Note 'Re-running this script is safe.'
+}
 
 # --- 4. auto-login --------------------------------------------------------- #
 Phase '4/5  auto-login'
@@ -345,7 +415,6 @@ if ($fusOk) { Ok 'fast user switching available' }
 Phase '5/5  scheduled tasks'
 
 $adminUser = "$env:USERDOMAIN\$AdminAccount"
-$automationUser = "$env:COMPUTERNAME\$AutomationAccount"
 $cmdExe = "$env:SystemRoot\System32\cmd.exe"
 $midnight = [datetime]::Today
 
@@ -401,10 +470,10 @@ Add-CiteTask -name 'cite-cli lock-on-logon' `
     -principal (New-ScheduledTaskPrincipal -UserId $automationUser -LogonType Interactive -RunLevel Limited)
 
 # clean: stays on the admin account, which has the rights to delete other
-# users' acquisition data. Runs 12:00-1:00 AM.
+# users' acquisition data. Runs at midnight sharp, ahead of sync/renew.
 Add-CiteTask -name 'cite-cli clean' -user $adminUser -password (Get-Plain $AdminPassword) `
     -action (New-CiteAction $adminUv "clean -d $CleanDays -f") `
-    -trigger (New-ScheduledTaskTrigger -Daily -At $midnight -RandomDelay (New-TimeSpan -Hours 1)) `
+    -trigger (New-ScheduledTaskTrigger -Daily -At $midnight) `
     -settings (New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Hours 4))
 
