@@ -64,8 +64,9 @@ def _alert_on_failure(command: str) -> Iterator[None]:
 # List of default paths to clean if no path is specified.
 DEFAULT_PATHS = [
     "D:/User_Data",  # s1, s2, s8, s9, s10, s14
-    "E:/User_Data",  # s1, s2, s3, s18
-    "F:/User_Data",  # s1, s2, s5
+    "E:/User_Data",  # s1, s2, s18
+    "F:/User_Data",  # s1, s2, s3, s5
+    "G:/User_Data",  # s3
     "C:/User_Data",  # s8
     "Z:/User_Data",  # s10
     "F:/UserData",  # s15
