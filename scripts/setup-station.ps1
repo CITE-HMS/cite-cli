@@ -385,7 +385,14 @@ Start-ScheduledTask -TaskName $bootTaskName
 $deadline = (Get-Date).AddMinutes(3)
 do {
     Start-Sleep -Seconds 2
-    $state = (Get-ScheduledTask -TaskName $bootTaskName).State
+    # Right after Start-ScheduledTask, Get-ScheduledTask can throw "the system
+    # cannot find the file specified" for a beat - a known CIM provider timing
+    # glitch, not the task actually vanishing (nothing removes it before the
+    # explicit Unregister-ScheduledTask below). Treat a failed read as still
+    # running and keep polling, rather than letting a transient hiccup abort
+    # the whole script under $ErrorActionPreference = 'Stop'.
+    $task = Get-ScheduledTask -TaskName $bootTaskName -ErrorAction SilentlyContinue
+    $state = if ($task) { $task.State } else { 'Running' }
 } while ($state -eq 'Running' -and (Get-Date) -lt $deadline)
 # Grab the exit code before the task is gone - it is the only clue left once
 # it is unregistered, and it is what actually distinguishes "wrong password"
