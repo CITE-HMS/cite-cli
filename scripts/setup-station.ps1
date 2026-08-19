@@ -377,8 +377,15 @@ $bootAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument (
     '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $bootstrapPath + '"')
 $bootSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+# -Force: a run interrupted before reaching the cleanup Unregister-ScheduledTask
+# below (further down this phase) leaves this exact task registered, and the
+# plain Unregister above can silently fail to clear it - notably while an
+# instance from that earlier run is still executing. Without -Force that
+# leftover makes this Register fail with "Cannot create a file when that file
+# already exists" instead of just replacing it, the same reason Add-CiteTask
+# uses -Force for the four real tasks below.
 Register-ScheduledTask -TaskName $bootTaskName -Action $bootAction -Settings $bootSettings `
-    -User $automationUser -Password (Get-Plain $AutomationPassword) -RunLevel Highest | Out-Null
+    -User $automationUser -Password (Get-Plain $AutomationPassword) -RunLevel Highest -Force | Out-Null
 
 Write-Host "  running as $AutomationAccount (first run also builds its profile, ~1 min)"
 Start-ScheduledTask -TaskName $bootTaskName
