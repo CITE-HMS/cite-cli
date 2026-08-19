@@ -5,12 +5,12 @@
 #   1. create the cite-automation account (+ "Log on as a batch job")
 #   2. set the CITE_ALERT_* variables machine-wide
 #   3. install uv and create .cite\logs for BOTH accounts
-#   4. auto-login as cite-automation, and lock the session right after
-#   5. register the four scheduled tasks: clean, sync, renew, lock-on-logon
+#   4. register the two scheduled tasks: clean, renew
 #
-# It also warns, without changing anything, when fast user switching is off, or
-# when the third-party PPMS-RT-Client task is not scoped to the User account -
-# neither of those may interfere with the auto-login session.
+# Both tasks run headless, whether or not anyone is logged on to the station -
+# neither needs an interactive Windows session. `cite sync` (which drives the
+# GUI-only NIS-Elements License Manager) is NOT scheduled here: run it by hand,
+# logged on to the station, whenever a submitted renewal needs to be applied.
 #
 # Run ONCE per station, from an ELEVATED PowerShell ("Administrator: Windows
 # PowerShell" in the title bar), logged in as the admin account that should own
@@ -23,12 +23,11 @@
 # against Windows as soon as they are typed, so a mistake only costs
 # re-typing that one prompt - and they are required every run, account
 # creation or not, because Windows can verify a guess but never return the
-# real password, and the script needs the real one for the LSA secret and the
-# batch-logon tasks. The Gmail App Password is different: it is just the
-# machine env var this script set last time, so it is only asked again if it
-# is not set yet, or if you choose to replace it. Re-running is safe -
-# accounts are reused, tasks replaced. Only the reboot test is left to do by
-# hand afterwards.
+# real password, and the script needs the real one for the batch-logon tasks.
+# The Gmail App Password is different: it is just the machine env var this
+# script set last time, so it is only asked again if it is not set yet, or if
+# you choose to replace it. Re-running is safe - the account is reused and
+# tasks are replaced.
 
 # --- edit only if a station differs ---------------------------------------- #
 $AutomationAccount = 'cite-automation'
@@ -36,8 +35,6 @@ $Email = 'citeathms@gmail.com'    # renewal form, and alert sender + recipient
 $FullName = 'Federico Gasparoli'  # renewal form
 $CleanDays = 25                   # cite clean -d
 $RepoUrl = 'git+https://github.com/CITE-HMS/cite-cli'
-$PpmsTask = 'PPMS-RT-Client'      # third-party task, only checked, never touched
-$PpmsUser = 'User'                # the only account it may start for
 # --------------------------------------------------------------------------- #
 
 $ErrorActionPreference = 'Stop'
@@ -59,7 +56,7 @@ function Get-Plain {
 
 function Read-PasswordTwice {
     # Typed twice: a typo in either account password is otherwise only found
-    # much later, and a wrong auto-login password fails silently at reboot.
+    # much later, when the batch task it belongs to fails silently overnight.
     # -StripSpaces ignores spacing differences between the two entries - Gmail
     # shows its app password in groups of four, and how it was typed or
     # pasted should not cause a false mismatch.
@@ -106,8 +103,8 @@ if (-not $isAdmin) {
 }
 
 Write-Host "cite-cli station setup on $env:COMPUTERNAME" -ForegroundColor White
-Write-Host "  clean runs as      : $AdminAccount"
-Write-Host "  sync/renew run as  : $AutomationAccount"
+Write-Host "  clean runs as : $AdminAccount"
+Write-Host "  renew runs as : $AutomationAccount"
 
 # Each password is checked as soon as it is typed, not after all three are in -
 # so a mistake on one only costs re-typing that one, never the ones after it
@@ -153,7 +150,7 @@ else {
 }
 
 # --- 1. the cite-automation account ---------------------------------------- #
-Phase '1/5  cite-automation account'
+Phase '1/4  cite-automation account'
 
 if ($automationExisted) {
     Ok "account already exists"
@@ -163,8 +160,8 @@ else {
         -AccountNeverExpires -FullName 'CITE automation' | Out-Null
     Ok "account created"
 }
-# PasswordNeverExpires matters: an expired password silently kills auto-login,
-# and the sync leg goes quiet until someone notices.
+# PasswordNeverExpires matters: an expired password silently kills the batch
+# logon, and renew goes quiet until someone notices.
 Set-LocalUser -Name $AutomationAccount -PasswordNeverExpires $true
 try { Add-LocalGroupMember -Group 'Users' -Member $AutomationAccount -ErrorAction Stop } catch {}
 
@@ -191,11 +188,11 @@ else {
 Remove-Item $inf, $new, $db -Force -ErrorAction SilentlyContinue
 
 # --- 2. email alert variables ---------------------------------------------- #
-Phase '2/5  email alert variables'
+Phase '2/4  email alert variables'
 
 # Machine scope is the whole point (this is `setx /M`): clean runs as one
-# account and sync/renew as the other. A per-user value leaves one of them
-# unable to email anything, and it fails silently.
+# account and renew as the other. A per-user value leaves one of them unable
+# to email anything, and it fails silently.
 # Google shows the app password in groups of four; the spaces are only for
 # reading. Strip them, so it does not matter how it was typed or pasted.
 foreach ($v in @{ CITE_ALERT_SMTP_USER = $Email
@@ -208,7 +205,7 @@ foreach ($v in @{ CITE_ALERT_SMTP_USER = $Email
 }
 
 # --- 3. uv + log folders, for both accounts -------------------------------- #
-Phase '3/5  uv and log folders'
+Phase '3/4  uv and log folders'
 
 $automationUser = "$env:COMPUTERNAME\$AutomationAccount"
 
@@ -233,7 +230,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $env:USERPROFILE '.cite\log
 # own log folder. Running this as that user also creates its profile, which
 # saves logging into it by hand. Never point a task at the other account's
 # uv.exe: besides not being readable across profiles, it would let whoever
-# controls the auto-login account run code as the admin one.
+# controls the cite-automation account run code as the admin one.
 $bootstrap = @'
 $ErrorActionPreference = 'Stop'
 $cite = Join-Path $env:USERPROFILE '.cite'
@@ -249,26 +246,6 @@ try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex"
     }
-    # Screen-saver backstop: the only lock layer Windows enforces continuously.
-    $desk = 'HKCU:\Control Panel\Desktop'
-    Set-ItemProperty $desk -Name ScreenSaveActive -Value '1'
-    Set-ItemProperty $desk -Name ScreenSaverIsSecure -Value '1'
-    Set-ItemProperty $desk -Name ScreenSaveTimeOut -Value '60'
-    Set-ItemProperty $desk -Name 'SCRNSAVE.EXE' -Value "$env:SystemRoot\System32\scrnsave.scr"
-    # Primary lock. Explorer runs the Run key as part of shell startup, so it
-    # cannot fire before the session is ready, and it cannot miss an event the
-    # way Task Scheduler's "at log on" trigger does when the service is still
-    # coming up during an auto-login - the failure three staggered triggers
-    # could never fix, because all three sat inside that same early window.
-    # Never `New-Item -Force` this key. On the registry provider that recreates
-    # an existing key and drops the values inside it - and Run always exists,
-    # often holding other software's startup entries. Only create it if absent.
-    $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-    if (-not (Test-Path $run)) { New-Item -Path $run -Force | Out-Null }
-    $watchdog = "$env:ProgramData\cite-cli\cite-lock-watchdog.ps1"
-    Set-ItemProperty $run -Name CiteLock -Value (
-        'powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass ' +
-        "-File `"$watchdog`"")
     $result.uv = $uv
     $result.ok = (Test-Path $uv)
 }
@@ -278,86 +255,6 @@ finally { $result | ConvertTo-Json | Set-Content (Join-Path $cite 'setup-result.
 $bootstrapPath = "$env:ProgramData\cite-cli\setup-user-bootstrap.ps1"
 New-Item -ItemType Directory -Force -Path (Split-Path $bootstrapPath) | Out-Null
 Set-Content -Path $bootstrapPath -Value $bootstrap -Encoding UTF8
-
-# The lock itself is the same LockWorkStation call the old rundll32 action made.
-# What this adds is everything around it: rundll32 discards the return value, so
-# a refused lock was silent and unrecoverable. This checks it, keeps retrying
-# until it takes, re-locks if the desktop is ever found open again, and leaves a
-# log - nobody is meant to be using this desktop, so re-locking is always right.
-$lockWatchdog = @'
-$ErrorActionPreference = 'SilentlyContinue'
-Add-Type @"
-using System.Runtime.InteropServices;
-public static class CiteLock {
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern bool LockWorkStation();
-}
-"@
-
-$logDir = Join-Path $env:USERPROFILE '.cite\logs'
-New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-$log = Join-Path $logDir 'lock.log'
-# Announce startup unconditionally. The lock-on-logon task can win the race and
-# lock first, leaving this watchdog with nothing to do and nothing to log - and
-# an empty log would then read as "it never started", which is the opposite
-# diagnosis. One line at launch keeps the two cases apart.
-"$(Get-Date -f s) watchdog started (pid $PID)" | Add-Content $log
-
-# Maintenance escape hatch. Signing in as cite-automation with this running
-# would re-lock the desktop every two seconds, so from the admin account, before
-# switching over:
-#     New-Item C:\ProgramData\cite-cli\lock-paused
-# The pause expires two hours after the file was last written - a forgotten file
-# can never leave the station sitting open. Touch it again to extend it, or
-# delete it to resume locking at once. LastWriteTime, not CreationTime: NTFS
-# file tunneling can hand a recreated file the original creation stamp, which
-# would make a fresh pause look expired the moment it was made.
-$pausePath = Join-Path $env:ProgramData 'cite-cli\lock-paused'
-$wasPaused = $false
-
-$fails = 0
-while ($true) {
-    $pause = Get-Item $pausePath -ErrorAction SilentlyContinue
-    if ($pause -and $pause.LastWriteTime -gt (Get-Date).AddHours(-2)) {
-        if (-not $wasPaused) {
-            "$(Get-Date -f s) paused for maintenance" | Add-Content $log
-            $wasPaused = $true
-        }
-        Start-Sleep -Seconds 5
-        continue
-    }
-    if ($wasPaused) {
-        "$(Get-Date -f s) pause ended, locking resumed" | Add-Content $log
-        $wasPaused = $false
-    }
-
-    # LogonUI.exe exists exactly while the lock screen is up. Its absence means
-    # this desktop is sitting open, whatever the lock task believes it did.
-    if (Get-Process LogonUI -ErrorAction SilentlyContinue) {
-        $fails = 0
-        Start-Sleep -Seconds 5
-        continue
-    }
-    if ([CiteLock]::LockWorkStation()) {
-        "$(Get-Date -f s) locked" | Add-Content $log
-        $fails = 0
-        # Give LogonUI a moment to appear, so one lock is not logged twice.
-        Start-Sleep -Seconds 5
-    }
-    else {
-        # First failure, then every 30th: a permanently refused lock must not
-        # fill the disk at one line every two seconds.
-        if ($fails % 30 -eq 0) {
-            "$(Get-Date -f s) LockWorkStation returned false (attempt $($fails + 1))" |
-                Add-Content $log
-        }
-        $fails++
-        Start-Sleep -Seconds 2
-    }
-}
-'@
-$lockWatchdogPath = "$env:ProgramData\cite-cli\cite-lock-watchdog.ps1"
-Set-Content -Path $lockWatchdogPath -Value $lockWatchdog -Encoding UTF8
 
 $automationUv = Join-Path (Get-ProfilePath $AutomationAccount) '.local\bin\uv.exe'
 # Drop any result from an earlier run, so a failure here cannot read as success.
@@ -369,7 +266,7 @@ Remove-Item (Join-Path (Get-ProfilePath $AutomationAccount) '.cite\setup-result.
 # fail silently for reasons unrelated to the account being fine - Secondary
 # Logon service state, UAC/token quirks, local policy - with no error to catch.
 # A scheduled task uses the batch logon right granted to $AutomationAccount in
-# step 1/5, the same mechanism the real 'cite-cli renew' task relies on below,
+# step 1/4, the same mechanism the real 'cite-cli renew' task relies on below,
 # and it is what reliably creates the profile on a first run.
 $bootTaskName = 'cite-cli-bootstrap-temp'
 Unregister-ScheduledTask -TaskName $bootTaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -383,7 +280,7 @@ $bootSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -Allow
 # instance from that earlier run is still executing. Without -Force that
 # leftover makes this Register fail with "Cannot create a file when that file
 # already exists" instead of just replacing it, the same reason Add-CiteTask
-# uses -Force for the four real tasks below.
+# uses -Force for the two real tasks below.
 Register-ScheduledTask -TaskName $bootTaskName -Action $bootAction -Settings $bootSettings `
     -User $automationUser -Password (Get-Plain $AutomationPassword) -RunLevel Highest -Force | Out-Null
 
@@ -436,114 +333,8 @@ else {
     Note 'Re-running this script is safe.'
 }
 
-# --- 4. auto-login --------------------------------------------------------- #
-Phase '4/5  auto-login'
-
-# Stores the password the way netplwiz and Sysinternals Autologon do: as an LSA
-# private secret, never as a plaintext registry value.
-if (-not ('CiteLsa' -as [type])) {
-    Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class CiteLsa
-{
-    [StructLayout(LayoutKind.Sequential)]
-    private struct LSA_UNICODE_STRING { public ushort Length; public ushort MaximumLength; public IntPtr Buffer; }
-    [StructLayout(LayoutKind.Sequential)]
-    private struct LSA_OBJECT_ATTRIBUTES
-    {
-        public int Length; public IntPtr RootDirectory; public IntPtr ObjectName;
-        public uint Attributes; public IntPtr SecurityDescriptor; public IntPtr SecurityQualityOfService;
-    }
-    [DllImport("advapi32.dll", SetLastError = true)]
-    private static extern uint LsaOpenPolicy(IntPtr SystemName, ref LSA_OBJECT_ATTRIBUTES ObjectAttributes,
-                                             uint DesiredAccess, out IntPtr PolicyHandle);
-    [DllImport("advapi32.dll", SetLastError = true)]
-    private static extern uint LsaStorePrivateData(IntPtr PolicyHandle, ref LSA_UNICODE_STRING KeyName,
-                                                   ref LSA_UNICODE_STRING PrivateData);
-    [DllImport("advapi32.dll")] private static extern uint LsaClose(IntPtr ObjectHandle);
-    [DllImport("advapi32.dll")] private static extern int LsaNtStatusToWinError(uint Status);
-
-    private static LSA_UNICODE_STRING Str(string s)
-    {
-        LSA_UNICODE_STRING u = new LSA_UNICODE_STRING();
-        u.Buffer = Marshal.StringToHGlobalUni(s);
-        u.Length = (ushort)(s.Length * 2);
-        u.MaximumLength = (ushort)(u.Length + 2);
-        return u;
-    }
-
-    public static void Store(string key, string data)
-    {
-        LSA_OBJECT_ATTRIBUTES attrs = new LSA_OBJECT_ATTRIBUTES();
-        attrs.Length = Marshal.SizeOf(typeof(LSA_OBJECT_ATTRIBUTES));
-        IntPtr policy;
-        uint st = LsaOpenPolicy(IntPtr.Zero, ref attrs, 0x00000024, out policy);
-        if (st != 0) throw new Exception("LsaOpenPolicy failed, win32 error " + LsaNtStatusToWinError(st));
-        LSA_UNICODE_STRING k = Str(key);
-        LSA_UNICODE_STRING d = Str(data);
-        try
-        {
-            st = LsaStorePrivateData(policy, ref k, ref d);
-            if (st != 0) throw new Exception("LsaStorePrivateData failed, win32 error " + LsaNtStatusToWinError(st));
-        }
-        finally { Marshal.FreeHGlobal(k.Buffer); Marshal.ZeroFreeGlobalAllocUnicode(d.Buffer); LsaClose(policy); }
-    }
-}
-'@
-}
-[CiteLsa]::Store('DefaultPassword', (Get-Plain $AutomationPassword))
-
-$winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
-Set-ItemProperty $winlogon -Name AutoAdminLogon -Value '1' -Type String
-Set-ItemProperty $winlogon -Name DefaultUserName -Value $AutomationAccount -Type String
-Set-ItemProperty $winlogon -Name DefaultDomainName -Value $env:COMPUTERNAME -Type String
-# Never leave a plaintext password next to the LSA secret.
-Remove-ItemProperty $winlogon -Name DefaultPassword -ErrorAction SilentlyContinue
-Remove-ItemProperty $winlogon -Name AutoLogonCount -ErrorAction SilentlyContinue
-# Unhide the netplwiz checkbox, so this can be inspected or undone by hand.
-$passwordless = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device'
-if (-not (Test-Path $passwordless)) { New-Item -Path $passwordless -Force | Out-Null }
-Set-ItemProperty $passwordless -Name DevicePasswordLessBuildVersion -Value 0 -Type DWord
-Ok "auto-login enabled (password kept as an LSA secret)"
-
-# Fast user switching has to stay available: with it off, signing in as another
-# user logs $AutomationAccount OFF instead of leaving its session parked, and
-# `cite sync` then has no interactive session until the next reboot. Reported
-# only - on a domain-joined station a GPO would undo a local change anyway.
-# Both values mean "enabled" when absent, so only an explicit setting is wrong.
-$sysPolicy = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
-$hide = (Get-ItemProperty $sysPolicy -Name HideFastUserSwitching -ErrorAction SilentlyContinue).HideFastUserSwitching
-$multiSession = (Get-ItemProperty $winlogon -Name AllowMultipleTSSessions -ErrorAction SilentlyContinue).AllowMultipleTSSessions
-$fusOk = $true
-if ($hide) {
-    Warn "fast user switching is hidden (HideFastUserSwitching = $hide)"
-    Note "signing in as another user would log $AutomationAccount off, leaving cite sync"
-    Note 'without a session until the next reboot. To enable it:'
-    Note '  1. Press Win + R, type gpedit.msc, press Enter'
-    Note '  2. Go to Computer Configuration > Administrative Templates > System > Logon'
-    Note '  3. Double-click "Hide entry points for Fast User Switching"'
-    Note '  4. Set it to Not Configured, click OK'
-    Note '  5. Restart the PC'
-    Note '  on Windows Home there is no gpedit.msc: set HideFastUserSwitching to 0'
-    Note "  under $sysPolicy instead"
-    $fusOk = $false
-}
-if ($multiSession -eq 0) {
-    Warn 'fast user switching is off (AllowMultipleTSSessions = 0)'
-    Note 'To enable it:'
-    Note '  1. Press Win + R, type regedit, press Enter'
-    Note '  2. Go to HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
-    Note '  3. Double-click AllowMultipleTSSessions and set Value data to 1'
-    Note '  4. Restart the PC'
-    Note '  or, from this elevated PowerShell:'
-    Note "     Set-ItemProperty '$winlogon' -Name AllowMultipleTSSessions -Value 1"
-    $fusOk = $false
-}
-if ($fusOk) { Ok 'fast user switching available' }
-
-# --- 5. the four scheduled tasks ------------------------------------------- #
-Phase '5/5  scheduled tasks'
+# --- 4. the two scheduled tasks ---------------------------------------------#
+Phase '4/4  scheduled tasks'
 
 $adminUser = "$env:USERDOMAIN\$AdminAccount"
 $cmdExe = "$env:SystemRoot\System32\cmd.exe"
@@ -560,28 +351,15 @@ function New-CiteAction {
         ' > "%USERPROFILE%\.cite\logs\bootstrap.log" 2>&1"')
 }
 
-function New-LogonTrigger {
-    param($user, $delay)
-    $t = New-ScheduledTaskTrigger -AtLogOn -User $user
-    $t.Delay = $delay
-    $t
-}
-
 function Add-CiteTask {
     # -Force replaces a task of the same name without asking. Task names are
     # unique per folder, so there is no "keep both" - and replacing is what
     # makes re-running this script the way to repair a half-built station.
-    param($name, $action, $trigger, $settings, $user, $password, $principal)
+    param($name, $action, $trigger, $settings, $user, $password)
     $existed = [bool](Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue)
     try {
-        if ($principal) {
-            Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger `
-                -Settings $settings -Principal $principal -Force | Out-Null
-        }
-        else {
-            Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger `
-                -Settings $settings -User $user -Password $password -RunLevel Highest -Force | Out-Null
-        }
+        Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger `
+            -Settings $settings -User $user -Password $password -RunLevel Highest -Force | Out-Null
         Ok "task '$name' $(if ($existed) { '(replaced the existing one)' } else { 'created' })"
     }
     catch {
@@ -589,46 +367,17 @@ function Add-CiteTask {
     }
 }
 
-# lock-on-logon: five staggered triggers, because locking too early can
-# silently do nothing. Locking an already-locked session is a harmless no-op.
-# The later ones only help the "session was not ready yet" case: a trigger delay
-# is counted from when Task Scheduler observes the logon, so if the service was
-# still starting and missed the event, no delay recovers it. That gap is what
-# the watchdog covers - this task is only the independent second launcher.
-Add-CiteTask -name 'cite-cli lock-on-logon' `
-    -action (New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\rundll32.exe" -Argument 'user32.dll,LockWorkStation') `
-    -trigger @(
-    (New-LogonTrigger $automationUser 'PT5S'),
-    (New-LogonTrigger $automationUser 'PT10S'),
-    (New-LogonTrigger $automationUser 'PT15S'),
-    (New-LogonTrigger $automationUser 'PT30S'),
-    (New-LogonTrigger $automationUser 'PT45S')) `
-    -settings (New-ScheduledTaskSettingsSet -MultipleInstances Parallel -AllowStartIfOnBatteries `
-        -ExecutionTimeLimit (New-TimeSpan -Minutes 1)) `
-    -principal (New-ScheduledTaskPrincipal -UserId $automationUser -LogonType Interactive -RunLevel Limited)
-
 # clean: stays on the admin account, which has the rights to delete other
-# users' acquisition data. Runs at midnight sharp, ahead of sync/renew.
+# users' acquisition data. Runs at midnight sharp, ahead of renew.
 Add-CiteTask -name 'cite-cli clean' -user $adminUser -password (Get-Plain $AdminPassword) `
     -action (New-CiteAction $adminUv "clean -d $CleanDays -f") `
     -trigger (New-ScheduledTaskTrigger -Daily -At $midnight) `
     -settings (New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Hours 4))
 
-# sync: needs a logged-on session for the GUI-only License Manager. 1:00 AM
-# sharp - no random delay, it has to stay ahead of renew - plus a catch-up
-# trigger 2 minutes after logon.
-Add-CiteTask -name 'cite-cli sync' `
-    -action (New-CiteAction $automationUv 'sync') `
-    -trigger @(
-    (New-ScheduledTaskTrigger -Daily -At $midnight.AddHours(1)),
-    (New-LogonTrigger $automationUser 'PT2M')) `
-    -settings (New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries `
-        -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1)) `
-    -principal (New-ScheduledTaskPrincipal -UserId $automationUser -LogonType Interactive -RunLevel Highest)
-
-# renew: headless, so it stores the password and needs the batch logon right.
-# 1:15-2:15 AM, after sync.
+# renew: fully headless (no --sync), so it stores the password and needs the
+# batch logon right. It submits and detects renewals on its own; applying a
+# pending one still needs `cite sync` run by hand in an interactive session.
 Add-CiteTask -name 'cite-cli renew' -user $automationUser -password (Get-Plain $AutomationPassword) `
     -action (New-CiteAction $automationUv "renew --email $Email --full-name `"$FullName`" --url nikon") `
     -trigger (New-ScheduledTaskTrigger -Daily -At $midnight.AddMinutes(75) -RandomDelay (New-TimeSpan -Hours 1)) `
@@ -637,8 +386,10 @@ Add-CiteTask -name 'cite-cli renew' -user $automationUser -password (Get-Plain $
 
 # Registering replaces the task at that path only, and task names are unique
 # per folder - so an older copy in a subfolder, or one whose name differs by a
-# stray space, keeps running alongside the four above.
-$ours = 'cite-cli clean', 'cite-cli sync', 'cite-cli renew', 'cite-cli lock-on-logon'
+# stray space, keeps running alongside the two above. This also catches
+# leftovers from the old auto-login setup (`cite-cli sync`,
+# `cite-cli lock-on-logon`) on a station that has not run cleanup-station.ps1.
+$ours = 'cite-cli clean', 'cite-cli renew'
 $strays = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
         $_.TaskName -like '*cite*' -and -not ($_.TaskPath -eq '\' -and $ours -contains $_.TaskName)
     })
@@ -648,111 +399,23 @@ foreach ($s in $strays) {
     Note "  Unregister-ScheduledTask -TaskName '$($s.TaskName)' -TaskPath '$($s.TaskPath)' -Confirm:`$false"
 }
 
-# --- PPMS-RT-Client -------------------------------------------------------- #
-Phase 'PPMS-RT-Client'
-
-# Not one of our tasks, but it must never run in the auto-login session: it is
-# meant to start at logon of the $PpmsUser account only. A logon trigger left on
-# "any user" would launch it as $AutomationAccount too, once per repetition.
-# Scan every folder, not just the root: `Get-ScheduledTask -TaskName x` misses a
-# task registered under a subfolder. Fall back to a loose match so a task that is
-# merely named differently is still found and reported.
-$allTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue)
-$found = @($allTasks | Where-Object { $_.TaskName -eq $PpmsTask })
-if (-not $found) {
-    $found = @($allTasks | Where-Object { $_.TaskName -like '*PPMS*' })
-    if ($found) {
-        Warn "no task named exactly '$PpmsTask', but found: $(($found | ForEach-Object { $_.TaskPath + $_.TaskName }) -join ', ')"
-    }
-}
-
-if (-not $found) {
-    Ok "no '$PpmsTask' task on this station - nothing to check"
-}
-foreach ($ppms in $found) {
-    $name = "$($ppms.TaskPath)$($ppms.TaskName)"
-    $logon = @($ppms.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' })
-    $other = @($ppms.Triggers | Where-Object { $_.CimClass.CimClassName -ne 'MSFT_TaskLogonTrigger' })
-
-    if (-not $logon) { Warn "'$name' has no logon trigger" }
-    foreach ($t in $logon) {
-        if (-not $t.UserId) {
-            Warn "'$name' triggers at logon of ANY user - it will also start in the $AutomationAccount session"
-        }
-        elseif (($t.UserId -split '\\')[-1] -ne $PpmsUser) {
-            Warn "'$name' triggers at logon of '$($t.UserId)', not '$PpmsUser'"
-        }
-        else { Ok "'$name' triggers at logon of '$($t.UserId)'" }
-    }
-    if ($other) {
-        Warn "'$name' has $($other.Count) trigger(s) that are not 'at log on' - it should only start at logon of '$PpmsUser'"
-    }
-
-    # A group principal (typically BUILTIN\Users) is fine: the logon trigger is
-    # what decides who it actually runs as.
-    $runsAs = if ($ppms.Principal.UserId) { $ppms.Principal.UserId } else { $ppms.Principal.GroupId }
-    if ($ppms.Principal.UserId -and ($ppms.Principal.UserId -split '\\')[-1] -ne $PpmsUser) {
-        Warn "'$name' runs as '$runsAs', not '$PpmsUser'"
-    }
-    else { Ok "'$name' runs as '$runsAs'" }
-}
-
-# --- desktop lock ---------------------------------------------------------- #
-Phase 'desktop lock'
-
-Ok "lock watchdog written to $lockWatchdogPath"
-Note "it starts from a Run key in $AutomationAccount's profile at every logon,"
-Note 'retries until the lock takes, and re-locks the desktop if it is ever'
-Note "found open. Its record is $($env:SystemDrive)\Users\$AutomationAccount\.cite\logs\lock.log"
-
-# A watchdog already running in a live session keeps executing the copy of the
-# script it started with. Re-running this cannot reach into that session to
-# restart it, so say so rather than let a stale one look like a failed update.
-$running = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like '*cite-lock-watchdog*' })
-if ($running) {
-    Note "$($running.Count) watchdog(s) already running - each keeps the script it"
-    Note 'started with until the next logon. Nothing to do; a reboot picks this up.'
-}
-
-# Warn, never delete: the pause may belong to whoever is mid-maintenance right
-# now, and silently re-arming the lock under them would be worse than a stale
-# file - which expires on its own in two hours regardless.
-$pauseFile = "$env:ProgramData\cite-cli\lock-paused"
-if (Test-Path $pauseFile) {
-    $expires = (Get-Item $pauseFile).LastWriteTime.AddHours(2)
-    if ($expires -gt (Get-Date)) {
-        Warn "locking is PAUSED until $expires"
-        Note "delete $pauseFile to re-arm it now"
-    }
-    else { Ok "an expired pause file is present and is being ignored" }
-}
-else { Ok 'locking is armed (no pause file)' }
-
 # --- done ------------------------------------------------------------------ #
 Write-Host @"
 
 Left to do by hand:
   1. Make sure the Public user has a folder named NIS_Elements containing
-     licmgr_s.exe.
+     licmgr_s.exe - cite sync needs it when you run it by hand below.
   2. In the $AdminAccount account, run each task once in Task Scheduler (renew
-     first, sync after) and check the logs under
+     first, clean after) and check the logs under
      C:\Users\$AutomationAccount\.cite\logs and C:\Users\$AdminAccount\.cite\logs
   3. Check an alert email arrives under BOTH accounts:
      uvx --from "$RepoUrl" cite test-alert
-  4. Reboot and do not touch it. The station must sign in on its own and land on
-     the lock screen within ~15 seconds, and
-     C:\Users\$AutomationAccount\.cite\logs\lock.log must gain a locked line.
-     That log is the check that matters - if the lock ever fails, it says
-     whether nothing ran at all or LockWorkStation itself was refused.
 
-To work inside the $AutomationAccount desktop later, pause the lock FIRST, from
-this account:
-     New-Item $env:ProgramData\cite-cli\lock-paused
-then switch user. Leave with Switch user or Win+L - never Sign out, which
-destroys the session cite sync needs. Then:
-     Remove-Item $env:ProgramData\cite-cli\lock-paused
-The pause expires by itself after 2 hours if you forget.
+When Nikon replies to a submitted renewal, log on to $AutomationAccount on this
+station (a normal interactive sign-in - nothing to pause or arm) and run:
+     uvx --from "$RepoUrl" cite sync
+cite renew already sends an alert if a pending submission goes 4+ days
+without a recorded sync attempt, so a forgotten station does not go quiet.
 "@
 
 # No `exit` here on purpose: it would close the window when this script is run
