@@ -27,29 +27,24 @@ A single command, `cite`, run unattended from Windows Task Scheduler on each sta
 
 | Command | Runs as | When | Purpose |
 | --- | --- | --- | --- |
-| `cite clean` | `Admin` | 12:00–1:00 AM | Delete old files |
-| `cite renew` | `cite-automation` | 1:15–2:15 AM | Submit renewals, detect applied ones |
+| `cite clean` | your admin account | 12:00–1:00 AM | Delete old files |
+| `cite renew` | your admin account | 1:15–2:15 AM | Submit renewals, detect applied ones |
 
-Both run headless — whether or not anyone is signed in to the station, so neither account needs an active session. `cite sync`, which applies a pending renewal once Nikon has approved it, is **not** scheduled: it drives a GUI-only dialog in NIS-Elements' License Manager, so it only works in an interactive session, and is run by hand instead — see [Applying a pending renewal](#applying-a-pending-renewal).
+Both run headless — whether or not anyone is signed in to the station — as the same admin account. `cite sync`, which applies a pending renewal once Nikon has approved it, is **not** scheduled: it drives a GUI-only dialog in NIS-Elements' License Manager, so it only works in an interactive session, and is run by hand instead — see [Applying a pending renewal](#applying-a-pending-renewal).
 
 ### Why the renewal is split in two
 
 `cite renew` does everything that works headlessly: it checks the dongle's expiration via ACC, submits a renewal request to Nikon when one is due, and detects when a previously-submitted one has actually landed. `cite sync` is the one piece that needs a live desktop — it drives NIS-Elements' GUI-only License Manager dialog to apply a submission Nikon has already approved.
 
-`cite renew` tracks pending submissions on its own and alerts by email if one goes 4+ days without a recorded `cite sync` attempt, so a submission nobody has applied yet does not go unnoticed. `cite renew` and `cite sync` share `%USERPROFILE%\.cite\renew_state.json`, so **both must run as the same Windows user**.
+`cite renew` tracks pending submissions on its own and alerts by email if one goes 4+ days without a recorded `cite sync` attempt, so a submission nobody has applied yet does not go unnoticed. `cite renew` and `cite sync` share `%USERPROFILE%\.cite\renew_state.json`, so **both must run as the same Windows user** — the admin account both scheduled tasks already use.
 
-### The two Windows accounts
+### One Windows account
 
-| Account | Why it exists |
-| --- | --- |
-| `Admin` (or whatever the station's admin is called) | Runs `cite clean`, which needs privileges over other users' data. |
-| `cite-automation` | An unprivileged account `cite renew` runs as headlessly, and the one you sign in to by hand to run `cite sync`. |
-
-Each account installs its own `uv`, and each task points at **its own account's** `uv.exe`. Never cross them: besides not being readable across profiles, putting `cite-automation`'s path into the `Admin` task would let anyone who compromised that account run code as `Admin`.
+Everything runs as a single admin account — whichever one you set the station up from (`Admin`, or whatever it's called locally). It needs admin rights anyway, since `cite clean` deletes other users' acquisition data; `cite renew` and `cite sync` don't need the privilege, they just run as the same account for simplicity and because they share state.
 
 ### Applying a pending renewal
 
-When Nikon replies to a submitted renewal, sign in to `cite-automation` on the station — an ordinary interactive sign-in, nothing to arm or disarm first — and run:
+When Nikon replies to a submitted renewal, sign in to that admin account on the station — an ordinary interactive sign-in — and run:
 
 ```powershell
 uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite sync
@@ -60,7 +55,7 @@ uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite sync
 ### Requirements
 
 1. Windows 10/11.
-2. [`uv`](https://docs.astral.sh/uv/getting-started/installation/) — installed per account. Note where `uv.exe` lands (e.g. `C:\Users\Admin\.local\bin\uv.exe`).
+2. [`uv`](https://docs.astral.sh/uv/getting-started/installation/) — installed for the admin account. Note where `uv.exe` lands (e.g. `C:\Users\Admin\.local\bin\uv.exe`).
 3. [`git`](https://git-scm.com/install/) — check with `git --version`. `uv tool run --from git+…` needs it.
 4. Make sure the NIS Elements `licmgr_s.exe` file exists under the Public Windows User in a folder named `NIS_Elements` — `cite sync` needs it.
 
@@ -68,9 +63,9 @@ uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite sync
 
 ## 2. Station setup with the script
 
-[`scripts/setup-station.ps1`](./scripts/setup-station.ps1) does the whole setup in one shot: creates the `cite-automation` account and grants it the batch-logon right, sets the alert variables machine-wide, installs `uv` and the log folder for *both* accounts, and registers the two scheduled tasks (`clean`, `renew`).
+[`scripts/setup-station.ps1`](./scripts/setup-station.ps1) does the whole setup in one shot, as whichever admin account you run it from: sets the alert variables machine-wide, installs `uv` and creates the log folder, and registers the two scheduled tasks (`clean`, `renew`).
 
-> **Station already has the old auto-login/lock setup?** Run [`scripts/cleanup-station.ps1`](./scripts/cleanup-station.ps1) first. It removes the `cite-cli sync` and `cite-cli lock-on-logon` tasks, disables auto-login, removes the lock watchdog, and removes the `cite-automation` account — without touching `cite-cli clean`/`cite-cli renew` or the alert variables. Then run the setup script below as usual to recreate the account and refresh the two tasks.
+> **Station already has the old `cite-automation` setup?** Run [`scripts/cleanup-station.ps1`](./scripts/cleanup-station.ps1) first. It removes the `cite-cli sync` and `cite-cli lock-on-logon` tasks, disables auto-login, removes the lock watchdog, and removes the `cite-automation` account — without touching `cite-cli clean` or the alert variables. Then run the setup script below, signed in as whichever admin account should own both tasks from now on.
 >
 > ```powershell
 > irm https://raw.githubusercontent.com/CITE-HMS/cite-cli/main/scripts/cleanup-station.ps1 | iex
@@ -78,13 +73,12 @@ uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite sync
 
 ### Before you start
 
-Have these three ready — [doing it by hand](#3-station-setup-by-hand) needs all three every time. The script needs the `cite-automation` and `Admin` passwords on every run too (Windows can check a password you type but never hand back the real one, so there's no way to skip re-typing them). The Gmail App Password is the exception: the script only asks for it if one isn't already set machine-wide, or if you choose to replace it — so keep it ready for the first run, or any run where you want to rotate it.
+Have these two ready — [doing it by hand](#3-station-setup-by-hand) needs both every time. The script needs your admin account's password on every run (Windows can check a password you type but never hand back the real one, so there's no way to skip re-typing it — it's needed even though you're already signed in as that account, because "run whether logged on or not" tasks always store it). The Gmail App Password is the exception: the script only asks for it if one isn't already set machine-wide, or if you choose to replace it — so keep it ready for the first run, or any run where you want to rotate it.
 
 | Value | How to get it |
 | --- | --- |
 | **Gmail App Password** | Generate at <https://myaccount.google.com/apppasswords>, label it "cite-cli" |
-| `cite-automation` password | The one you set during the setup |
-| `Admin` password | The one you logged in with |
+| Admin account password | The one you logged in with |
 | `licmgr_s.exe` | Make sure it exists under the Public Windows User in a folder named `NIS_Elements` |
 
 The Gmail App Password is a 16-character string, and it requires 2-Step Verification to be enabled on that account. It is what lets a station email you when a renewal lands or a command fails.
@@ -93,7 +87,7 @@ Google displays it as four groups of four (`abcd efgh ijkl mnop`). Those spaces 
 
 ### Run it
 
-- [ ] Log in as `Admin`.
+- [ ] Log in as the admin account that should own both tasks.
 - [ ] Open PowerShell **as administrator** — right-click the PowerShell icon → **Run as administrator**. The title bar must read `Administrator: Windows PowerShell`.
 - [ ] Run it straight from GitHub — nothing is saved to disk:
 
@@ -114,48 +108,39 @@ powershell -ExecutionPolicy Bypass -File .\setup-station.ps1
 
 Here `Unblock-File` clears the "downloaded from the internet" mark and `-ExecutionPolicy Bypass` gets past the default policy, which otherwise refuses with *"cannot be loaded because running scripts is disabled on this system"*.
 
-Either way it asks for the `cite-automation` and `Admin` passwords every time, and the Gmail App Password only if one isn't already set or you choose to replace it, then prints what it did.
+Either way it asks for your admin account's password every time, and the Gmail App Password only if one isn't already set or you choose to replace it, then prints what it did.
 
-**Re-running is safe.** Existing accounts are reused and tasks are replaced, so a run that failed halfway is fixed by running it again. A task of the same name is replaced **without asking** (task names are unique, so there is no "keep both"); each line says which happened — `created` or `replaced the existing one`.
+**Re-running is safe.** Tasks are replaced, so a run that failed halfway is fixed by running it again. A task of the same name is replaced **without asking** (task names are unique, so there is no "keep both"); each line says which happened — `created` or `replaced the existing one`.
 
 ### What it does
 
-The four steps it prints, in order:
+The three steps it prints, in order:
 
-1. Creates `cite-automation` (password never expires) and grants it **Log on as a batch job**.
-2. Sets some needed `VARIABLES` machine-wide, so both accounts inherit them.
-3. Installs `uv` for both accounts and creates both `%USERPROFILE%\.cite\logs` folders. It runs as `cite-automation` to do the second half, which also builds that account's profile — so you never have to log into it.
-4. Registers the two scheduled tasks (`clean`, `renew`) and reports each one.
+1. Sets some needed `VARIABLES` machine-wide.
+2. Installs `uv` and creates `%USERPROFILE%\.cite\logs`.
+3. Registers the two scheduled tasks (`clean`, `renew`), both as this account, and reports each one.
 
 Re-running it on a station that is already set up is safe and is the normal way to
-apply an update: the account is reused rather than recreated, and tasks are replaced
-in place.
+apply an update: tasks are replaced in place.
 
-If a station still has old `cite-cli sync` or `cite-cli lock-on-logon` tasks — left over from before this account stopped needing to stay signed in — the script warns about them as leftover tasks rather than touching them; run [`cleanup-station.ps1`](./scripts/cleanup-station.ps1) to remove them.
+If a station still has old `cite-cli sync` or `cite-cli lock-on-logon` tasks — left over from the old `cite-automation` setup — the script warns about them as leftover tasks rather than touching them; run [`cleanup-station.ps1`](./scripts/cleanup-station.ps1) to remove them.
 
-If one station needs different values — another retention window, a different account name — edit the constants at the top of the script before running it:
+If one station needs different values — another retention window, a different email — edit the constants at the top of the script before running it:
 
 ```powershell
-$AutomationAccount = 'account name'
-$Email             = 'email.@email.com'
-$FullName          = 'Name'
-$CleanDays         = 25
-$RepoUrl           = 'git+https://github.com/CITE-HMS/cite-cli'
+$Email      = 'email.@email.com'
+$FullName   = 'Name'
+$CleanDays  = 25
+$RepoUrl    = 'git+https://github.com/CITE-HMS/cite-cli'
 ```
 
 ### Verify the station
 
 This part is yours, whichever way you set the station up.
 
-- [ ] Run each task from the `Admin` user account: select it in Task Scheduler → **Run** (`renew` first, `clean` after).
-- [ ] Check the logs — remember there are **two** folders:
-
-| Task | Log folder |
-| --- | --- |
-| `renew` | `C:\Users\cite-automation\.cite\logs\` |
-| `clean` | `C:\Users\Admin\.cite\logs\` |
-
-- [ ] Confirm the license reads correctly, as `cite-automation`:
+- [ ] Run each task in Task Scheduler → **Run** (`renew` first, `clean` after).
+- [ ] Check the logs: `C:\Users\<admin account>\.cite\logs\`.
+- [ ] Confirm the license reads correctly:
 
 ```powershell
 uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite license
@@ -163,31 +148,31 @@ uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite license
 
 It should print an expiration date and a HASP ID.
 
-- [ ] Confirm an alert email arrives under **both** accounts:
+- [ ] Confirm an alert email arrives:
 
 ```powershell
 uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite test-alert
 ```
 
-- [ ] Sign in to `cite-automation` once — an ordinary interactive sign-in — and confirm `cite sync` runs cleanly (it needs `licmgr_s.exe`; see [Requirements](#requirements)):
+- [ ] Confirm `cite sync` runs cleanly (it needs `licmgr_s.exe`; see [Requirements](#requirements)):
 
 ```powershell
 uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite sync
 ```
 
-- [ ] The next morning, confirm `cite renew` ran overnight: check `C:\Users\cite-automation\.cite\logs\cite.log` and its Last Run Result in Task Scheduler.
+- [ ] The next morning, confirm `cite renew` ran overnight: check `C:\Users\<admin account>\.cite\logs\cite.log` and its Last Run Result in Task Scheduler.
 
 ---
 
 ## 3. Station setup by hand
 
-The same result, phase by phase. Use this when a station is unusual, when the script fails, or to understand what it did. Follow the phases in order — several steps depend on earlier ones. Collect the three values in [Before you start](#before-you-start) first, and finish with [Verify the station](#verify-the-station).
+The same result, phase by phase. Use this when a station is unusual, when the script fails, or to understand what it did. Follow the phases in order — several steps depend on earlier ones. Collect the two values in [Before you start](#before-you-start) first, and finish with [Verify the station](#verify-the-station).
 
-### Phase 1 — Create the `cite-automation` account
+### Phase 1 — Set the email alert variables (machine-wide)
 
-Log in as `Admin`. Open PowerShell **as administrator** — right-click the PowerShell icon → **Run as administrator**.
+Log in as the admin account that should own both tasks. Open PowerShell **as administrator** — right-click the PowerShell icon → **Run as administrator**.
 
-Being logged in *as* an administrator is **not** the same as running an *elevated* prompt. Without elevation the next command fails with `New-LocalUser : Access denied.` Two quick tells: an elevated window's title bar reads `Administrator: Windows PowerShell`, and it opens in `C:\Windows\system32` rather than your home folder. To be certain:
+Being logged in *as* an administrator is **not** the same as running an *elevated* prompt. Without elevation, registering a "Run whether user is logged on or not" task later fails. Two quick tells: an elevated window's title bar reads `Administrator: Windows PowerShell`, and it opens in `C:\Windows\system32` rather than your home folder. To be certain:
 
 ```powershell
 ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -195,35 +180,7 @@ Being logged in *as* an administrator is **not** the same as running an *elevate
 
 It must print `True` before you continue.
 
-- [ ] Create the account. It will ask for a password — use the standard NIC one.
-
-```powershell
-New-LocalUser -Name "cite-automation" -Password (Read-Host -AsSecureString "Password") -PasswordNeverExpires -AccountNeverExpires -FullName "CITE automation"
-Add-LocalGroupMember -Group "Users" -Member "cite-automation"
-```
-
-- [ ] Confirm it exists:
-
-```powershell
-Get-LocalUser cite-automation
-```
-
-`-PasswordNeverExpires` matters. If this password ever expires or is changed, the `renew` task's batch logon silently stops working, and it goes quiet until someone notices.
-
-- [ ] Grant **Log on as a batch job**. The `cite renew` task runs with *Run whether user is logged on or not*, which Windows starts as a **batch logon**. By default only Administrators and Backup Operators hold that right, so a standard account must be given it explicitly:
-
-1. Win+R → `secpol.msc`
-2. **Local Policies** → **User Rights Assignment**
-3. Double-click **Log on as a batch job**
-4. **Add User or Group…** → type `cite-automation` in *Enter the object names to select* → **Check Names** → **OK**
-
-Skipping this is what produces *"This task requires that the user account specified has Log on as batch job rights"* in Phase 6.
-
-### Phase 2 — Set the email alert variables (machine-wide)
-
-Still as `Admin`, in the **elevated** PowerShell.
-
-- [ ] Set all three with `/M` so **both** accounts inherit them:
+- [ ] Set all three with `/M` so the value survives regardless of which account ends up running these tasks:
 
 ```powershell
 setx /M CITE_ALERT_SMTP_USER "email@email.com"
@@ -231,7 +188,7 @@ setx /M CITE_ALERT_SMTP_PASSWORD "xxxx xxxx xxxx xxxx"
 setx /M CITE_ALERT_TO "email@email.com"
 ```
 
-**The `/M` is the whole point.** Plain `setx` writes to the current account only. Since `clean` runs as `Admin` and `renew` runs as `cite-automation`, a per-user variable leaves one of them unable to email anything — and it fails **silently**, with no error in any log.
+**The `/M` is the whole point.** Plain `setx` writes to the current account only, and `clean`/`renew` run whether or not you are signed in when they fire — a per-user value can leave them unable to email anything, and it fails **silently**, with no error in any log.
 
 Type the app password without spaces here: `setx` stores exactly what you give it, and the spaces are not part of the password.
 
@@ -241,54 +198,37 @@ Type the app password without spaces here: `setx` stores exactly what you give i
 echo $env:CITE_ALERT_SMTP_USER
 ```
 
-### Phase 3 — Install `uv` for both accounts
+### Phase 2 — Install `uv`
 
-`uv` installs into the profile of whoever runs the installer, so do it **twice** — once per account.
-
-- [ ] As `Admin`, install `uv`: <https://docs.astral.sh/uv/getting-started/installation/>
-- [ ] Get the `uv` path and copy it somewhere, it will be needed in Phase 6:
+- [ ] Install `uv`: <https://docs.astral.sh/uv/getting-started/installation/>
+- [ ] Get the `uv` path, it will be needed in Phase 3:
 
 ```powershell
 where.exe uv
 ```
 
-- [ ] Create this account's log folder:
+- [ ] Create the log folder:
 
 ```powershell
 mkdir "$env:USERPROFILE\.cite\logs" -Force
 ```
 
-- [ ] Sign out. Log in as `cite-automation` (first login takes a minute while Windows builds the profile).
-- [ ] Install `uv` again, and record this account's path too:
-
-```powershell
-where.exe uv
-```
-
-- [ ] Create this account's log folder:
-
-```powershell
-mkdir "$env:USERPROFILE\.cite\logs" -Force
-```
-
-Do not skip the two `mkdir` steps or the tasks won't run.
-
-The two paths differ (`C:\Users\Admin\.local\bin\uv.exe` vs `C:\Users\cite-automation\.local\bin\uv.exe`). That is fine and intentional — each account runs its own copy, and neither can tamper with the other's. The uv **cache** is per-account too (`%LOCALAPPDATA%\uv\cache`); leave it that way, because the tasks can overlap and two accounts sharing one cache directory causes lock and permission conflicts.
+Do not skip the `mkdir` step or the tasks won't run.
 
 - [ ] Install `git` if it is not already present: <https://git-scm.com/install/> (check with `git --version`).
 
-### Phase 4 — Create the two scheduled tasks
+### Phase 3 — Create the two scheduled tasks
 
-Every task uses the same **Action**: program `C:\Windows\System32\cmd.exe` with the arguments below. Replace `<uv>` with **that task's own account** `uv.exe` path from Phase 3 — `Admin`'s for `clean`, `cite-automation`'s for `renew`. Neither task needs an interactive session — both are set to **Run whether user is logged on or not**.
+Both tasks use the same **Action**: program `C:\Windows\System32\cmd.exe` with the arguments below, and both run as the same account — whichever admin account you are setting up as. Replace `<uv>` with the `uv.exe` path from Phase 2. Neither task needs an interactive session — both are set to **Run whether user is logged on or not**.
 
 Common settings unless stated otherwise:
 
 - **Conditions**: uncheck everything
 - **Settings**: **Allow task to be run on demand**, **Stop the task if it runs longer than: 1 hour**, **If the running task does not end when requested, force it to stop**
 
-#### 4a — `cite-cli clean` (account: `Admin`)
+#### 3a — `cite-cli clean`
 
-- **General**: `Admin` · **Run whether user is logged on or not** · **Run with highest privileges**
+- **General**: your admin account · **Run whether user is logged on or not** · **Run with highest privileges**
 - **Trigger**: Daily, **12:00:00 AM**, recur every 1 day, **random delay: 1 hour**
 - **Settings**: **Stop the task if it runs longer than: 4 hours**
 - **Arguments**:
@@ -299,9 +239,9 @@ Common settings unless stated otherwise:
 
 `-d 25` deletes files older than 25 days; `-f` skips the confirmation prompt (required unattended).
 
-#### 4b — `cite-cli renew` (account: `cite-automation`)
+#### 3b — `cite-cli renew`
 
-- **General**: `cite-automation` · **Run whether user is logged on or not** · **Run with highest privileges**
+- **General**: your admin account · **Run whether user is logged on or not** · **Run with highest privileges**
 - **Trigger**: Daily, **1:15:00 AM**, recur every 1 day, **random delay: 1 hour**
 - **Arguments** (one line — change the name, keep the quotes):
 
@@ -311,16 +251,16 @@ Common settings unless stated otherwise:
 
 Always use <citeathms@gmail.com> as the `--email` value.
 
-Saving a "Run whether user is logged on or not" task asks for that account's password. That is expected — Windows needs it to start the task in the background. If saving fails with *"This task requires that the user account specified has Log on as batch job rights"*, the `secpol.msc` step in Phase 1 was skipped. Grant the right, then save again.
+Saving a "Run whether user is logged on or not" task asks for that account's password, even though it is the one you are already using — Windows needs it to start the task in the background whether or not you are signed in at the time. Administrators hold **Log on as a batch job** by default, so this should just work; if saving instead fails with *"This task requires that the user account specified has Log on as batch job rights"*, see [Troubleshooting](#7-troubleshooting).
 
 **Resulting schedule:**
 
 | Task | Account | Runs |
 | --- | --- | --- |
-| `cite clean` | `Admin` | 12:00–1:00 AM |
-| `cite renew` | `cite-automation` | 1:15–2:15 AM |
+| `cite clean` | your admin account | 12:00–1:00 AM |
+| `cite renew` | your admin account | 1:15–2:15 AM |
 
-Neither task ever needs `cite-automation` to be signed in. When Nikon replies to a submitted renewal, sign in to `cite-automation` — an ordinary interactive sign-in — and run `cite sync` by hand; see [Applying a pending renewal](#applying-a-pending-renewal).
+Neither task ever needs anyone signed in. When Nikon replies to a submitted renewal, sign in to that admin account and run `cite sync` by hand; see [Applying a pending renewal](#applying-a-pending-renewal).
 
 Now go through [Verify the station](#verify-the-station).
 
@@ -328,9 +268,7 @@ Now go through [Verify the station](#verify-the-station).
 
 **Remove the tasks:** delete `cite-cli clean` and `cite-cli renew` from Task Scheduler.
 
-**Remove the account:** `Remove-LocalUser -Name "cite-automation"` from an elevated PowerShell. Its profile folder under `C:\Users\` must be deleted separately if you want the logs gone too.
-
-If the station still carries the *old* auto-login/lock setup from before `cite-automation` stopped needing to stay signed in, use [`cleanup-station.ps1`](./scripts/cleanup-station.ps1) instead of doing the above by hand — it removes the retired `cite-cli sync`/`cite-cli lock-on-logon` tasks, disables auto-login, and removes the lock watchdog and the account, all in one run.
+If the station still carries the *old* `cite-automation` setup — auto-login, the lock watchdog, and a separate account — use [`cleanup-station.ps1`](./scripts/cleanup-station.ps1) instead of undoing that by hand; it removes all of it, including the account, in one run.
 
 ---
 
@@ -364,7 +302,7 @@ Every `cite` command writes its full output to a rotating log at `%USERPROFILE%\
 
 The `> bootstrap.log 2>&1` redirect in the task arguments covers the rare case where `uvx` itself fails before Python starts (GitHub unreachable, dependency conflict). No Python code runs in that case, so the internal logger never gets a chance. The bootstrap file lives in the same `.cite\logs\` folder.
 
-Remember there is one folder per account: `renew` (scheduled) and `sync` (run by hand) both log under `C:\Users\cite-automation\`, `clean` under `C:\Users\Admin\`.
+All three log under the same folder, since all three run as the same account: `C:\Users\<admin account>\.cite\logs\`.
 
 ### Email alerts
 
@@ -376,7 +314,7 @@ Remember there is one folder per account: `renew` (scheduled) and `sync` (run by
 | `CITE_ALERT_SMTP_PASSWORD` | its [App Password](https://myaccount.google.com/apppasswords), **not** the real password |
 | `CITE_ALERT_TO` | where alerts go |
 
-On a station set up as described above these are set **machine-wide** (`setx /M`, or the script), because the tasks are split across two accounts. To use a non-Gmail SMTP server, also set `CITE_ALERT_SMTP_HOST` (default `smtp.gmail.com`) and `CITE_ALERT_SMTP_PORT` (default `587`, STARTTLS).
+On a station set up as described above these are set **machine-wide** (`setx /M`, or the script), so the value survives regardless of which account ends up running these tasks. To use a non-Gmail SMTP server, also set `CITE_ALERT_SMTP_HOST` (default `smtp.gmail.com`) and `CITE_ALERT_SMTP_PORT` (default `587`, STARTTLS).
 
 **Station names in subjects.** When the HASP ID is recognised, subjects and bodies use the station name instead of the hostname. The mapping lives in `src/cite/_renew.py` (`HASP_ID_TO_STATIONS_MAP`). A renewal on HASP ID `09882A98` produces:
 
@@ -402,7 +340,7 @@ On a normal day **nothing happens and no email arrives**. That is correct.
 The station emails you when:
 
 - ✅ the license was renewed (`NIS-Elements license renewed on <Station>`)
-- ⚠️ a renewal is pending and `cite sync` has not run for 4 days — a reminder that nobody has signed in to `cite-automation` to apply it yet
+- ⚠️ a renewal is pending and `cite sync` has not run for 4 days — a reminder that nobody has signed in to apply it yet
 - ⚠️ expiry is within 4 days and Nikon has not replied
 - ❌ any command failed
 
@@ -486,7 +424,7 @@ uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite renew `
 
 Beginning 48 hours after a real Nikon submission, starts License Manager invisibly and invokes its Synchronize action. It exits successfully without opening License Manager when no synchronization is due. A real attempt records its timestamp so retries occur every two days.
 
-The vendor does not expose Synchronize as a native command-line switch, so this command requires an interactive Windows desktop — it cannot be made to run headlessly. **Our default setup does not schedule it**: sign in to `cite-automation` and run it by hand whenever Nikon has replied to a pending renewal (see [Applying a pending renewal](#applying-a-pending-renewal)); `cite renew`'s step 3 above alerts you if a pending submission goes 4+ days without a recorded attempt.
+The vendor does not expose Synchronize as a native command-line switch, so this command requires an interactive Windows desktop — it cannot be made to run headlessly. **Our default setup does not schedule it**: sign in to the station's admin account and run it by hand whenever Nikon has replied to a pending renewal (see [Applying a pending renewal](#applying-a-pending-renewal)); `cite renew`'s step 3 above alerts you if a pending submission goes 4+ days without a recorded attempt.
 
 ```powershell
 uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite sync
@@ -694,7 +632,7 @@ No options.
 
 Problems seen on real stations, with the fix. Most are one-time per PC.
 
-### `New-LocalUser : Access denied.`
+### `Access denied` setting variables or registering a task
 
 **Cause:** the PowerShell window is not **elevated**. Being logged in *as* an administrator is not the same thing — UAC still requires an explicitly elevated prompt.
 
@@ -706,36 +644,32 @@ Problems seen on real stations, with the fix. Most are one-time per PC.
 ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 ```
 
-It must print `True`. If it prints `True` and access is *still* denied, confirm the account is in the local admins group with `net localgroup Administrators`; on a domain-joined station, policy can also block local account creation.
+It must print `True`. If it prints `True` and access is *still* denied, confirm the account is in the local admins group with `net localgroup Administrators`.
 
 ### "This task requires that the user account specified has Log on as batch job rights."
 
-**Cause:** saving a task set to **Run whether user is logged on or not** starts it as a *batch logon*, and by default only Administrators and Backup Operators hold that right. Task Scheduler normally grants it automatically, but cannot when Group Policy manages it.
+**Cause:** saving a task set to **Run whether user is logged on or not** starts it as a *batch logon*, and by default only Administrators and Backup Operators hold that right. Administrators hold it automatically, so this is rare — it means Group Policy manages (and has stripped) that right on a domain-joined station.
 
-**Affects:** the `cite-cli renew` task only — `cite-cli clean` runs as `Admin`, who already has the right.
+**Fix:** `secpol.msc` → **Local Policies** → **User Rights Assignment** → **Log on as a batch job** → **Add User or Group…** → your admin account. Then save the task again (it re-asks for the password).
 
-**Fix:** `secpol.msc` → **Local Policies** → **User Rights Assignment** → **Log on as a batch job** → **Add User or Group…** → `cite-automation`. Then save the task again (it re-asks for the password). This is Phase 1's grant step; the setup script does it with `secedit`.
-
-On Windows **Home** there is no `secpol.msc` — add `cite-automation` to the local **Backup Operators** group instead, which already holds the right.
+On Windows **Home** there is no `secpol.msc` — add the account to the local **Backup Operators** group instead, which already holds the right.
 
 ### No emails ever arrive
 
 **Cause:** almost always the alert variables were set with plain `setx` (current account only) instead of `setx /M` (machine-wide). Alerting then **silently no-ops** — there is no error in any log.
 
-**Fix:** redo [Phase 2](#phase-2--set-the-email-alert-variables-machine-wide) with `/M` from an elevated prompt, then verify from **both** accounts:
+**Fix:** redo [Phase 1](#phase-1--set-the-email-alert-variables-machine-wide) with `/M` from an elevated prompt, then verify:
 
 ```powershell
 uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite test-alert
 ```
 
-An email must arrive under `Admin` *and* under `cite-automation`.
+### `uvx` is not recognised
 
-### `uvx` is not recognised under one of the accounts
+**Cause:** `uv` installs into the profile of whoever ran the installer. Either it was never installed for this account, or the current PowerShell session hasn't picked up the updated `PATH` yet.
 
-**Cause:** `uv` installs per profile. It was installed for one account only.
-
-**Fix:** log in as the account that is missing it and install `uv` again ([Phase 3](#phase-3--install-uv-for-both-accounts)). Each account has its own `uv.exe` path — give every task **its own account's** path, never the other's.
+**Fix:** install `uv` for this account if missing ([Phase 2](#phase-2--install-uv)), then close and reopen PowerShell.
 
 ### A task shows Last Run Result `0x1`
 
-The command ran and failed. Open that account's log — `renew` under `C:\Users\cite-automation\.cite\logs\`, `clean` under `C:\Users\Admin\.cite\logs\` — and read the last entries in `cite.log`. A failure email should also have been sent; if not, see "No emails ever arrive".
+The command ran and failed. Open `C:\Users\<admin account>\.cite\logs\cite.log` and read the last entries. A failure email should also have been sent; if not, see "No emails ever arrive".

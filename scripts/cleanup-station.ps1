@@ -1,10 +1,12 @@
 #Requires -Version 5.1
 #
-# Undo the OLD auto-login/lock setup on a station that already had it applied,
-# before re-running the new setup-station.ps1 (which no longer creates any of
-# this - only `cite clean` and `cite renew` are scheduled; `cite sync` is run
-# by hand, logged on to the station, whenever a submitted renewal needs to be
-# applied).
+# Undo the OLD cite-automation-based setup (auto-login, the lock watchdog, and
+# the account itself) on a station that already had it applied, before
+# re-running the new setup-station.ps1 - which no longer uses a separate
+# account at all: `cite clean` and `cite renew` both run as your admin
+# account, whether or not anyone is signed in. `cite sync` is run by hand,
+# signed in to that same admin account, whenever a submitted renewal needs to
+# be applied.
 #
 # Removes:
 #   1. the 'cite-cli sync' and 'cite-cli lock-on-logon' scheduled tasks (and
@@ -14,9 +16,11 @@
 #      cite-automation's profile, and its script files under ProgramData
 #   4. the cite-automation account itself
 #
-# Leaves alone: the CITE_ALERT_* machine-wide env vars, and the
-# 'cite-cli clean' / 'cite-cli renew' tasks - setup-station.ps1 refreshes
-# those (and recreates the account) on its own next run.
+# Leaves alone: the CITE_ALERT_* machine-wide env vars and the 'cite-cli
+# clean' task. The old 'cite-cli renew' task (still registered to run as
+# cite-automation) is left in place too - setup-station.ps1 replaces it
+# in-place to run as your admin account instead on its next run, so there is
+# nothing to remove here.
 #
 # Run ONCE per station that has the old setup, from an ELEVATED PowerShell,
 # straight from GitHub:
@@ -55,10 +59,10 @@ if (-not $isAdmin) {
     throw "This window is not elevated. Right-click PowerShell -> 'Run as administrator'."
 }
 
-Write-Host "Removing the old auto-login/lock setup on $env:COMPUTERNAME" -ForegroundColor White
-Write-Host "  Leaves 'cite-cli clean', 'cite-cli renew', and the CITE_ALERT_*"
-Write-Host "  variables alone. Run setup-station.ps1 afterwards to recreate"
-Write-Host "  $AutomationAccount and refresh those two tasks."
+Write-Host "Removing the old auto-login/lock/$AutomationAccount setup on $env:COMPUTERNAME" -ForegroundColor White
+Write-Host "  Leaves 'cite-cli clean' and the CITE_ALERT_* variables alone."
+Write-Host "  Run setup-station.ps1 afterwards, signed in as whichever admin"
+Write-Host "  account should own both tasks from now on."
 
 # --- 1. retired scheduled tasks --------------------------------------------#
 Phase '1/4  retired scheduled tasks'
@@ -204,8 +208,8 @@ Phase '4/4  cite-automation account'
 
 if (Get-LocalUser -Name $AutomationAccount -ErrorAction SilentlyContinue) {
     # 'cite-cli renew' (if still registered) runs as this account and will
-    # fail until setup-station.ps1 recreates the account and re-registers the
-    # task - expected, since that is the very next step after this script.
+    # fail until setup-station.ps1 replaces it to run as your admin account
+    # instead - expected, since that is the very next step after this script.
     Remove-LocalUser -Name $AutomationAccount
     Ok "account '$AutomationAccount' removed"
     $userProfile = Get-ProfilePath $AutomationAccount
