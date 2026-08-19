@@ -124,7 +124,7 @@ affected, and it comes back at the next logon.
 
 ### Before you start
 
-Have these three ready — you will be asked for all of them, whether you run the script or [do it by hand](#3-station-setup-by-hand):
+Have these three ready — [doing it by hand](#3-station-setup-by-hand) needs all three every time. The script needs the `cite-automation` and `Admin` passwords on every run too (Windows can check a password you type but never hand back the real one, so there's no way to skip re-typing them). The Gmail App Password is the exception: the script only asks for it if one isn't already set machine-wide, or if you choose to replace it — so keep it ready for the first run, or any run where you want to rotate it.
 
 | Value | How to get it |
 | --- | --- |
@@ -160,7 +160,7 @@ powershell -ExecutionPolicy Bypass -File .\setup-station.ps1
 
 Here `Unblock-File` clears the "downloaded from the internet" mark and `-ExecutionPolicy Bypass` gets past the default policy, which otherwise refuses with *"cannot be loaded because running scripts is disabled on this system"*.
 
-Either way it asks for the **three passwords** above, then prints what it did.
+Either way it asks for the `cite-automation` and `Admin` passwords every time, and the Gmail App Password only if one isn't already set or you choose to replace it, then prints what it did.
 
 **Re-running is safe.** Existing accounts are reused and tasks are replaced, so a run that failed halfway is fixed by running it again. A task of the same name is replaced **without asking** (task names are unique, so there is no "keep both"); each line says which happened — `created` or `replaced the existing one`.
 

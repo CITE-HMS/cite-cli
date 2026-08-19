@@ -18,11 +18,17 @@
 #
 #     powershell -ExecutionPolicy Bypass -File .\setup-station.ps1
 #
-# It asks for three passwords, each typed twice: cite-automation's, this admin
-# account's, and the Gmail App Password. The first two are checked against
-# Windows as soon as they are typed, so a mistake only costs re-typing that one
-# prompt. Re-running is safe - accounts are reused, tasks replaced. Only the
-# reboot test is left to do by hand afterwards.
+# It asks for up to three passwords, each typed twice: cite-automation's, this
+# admin account's, and the Gmail App Password. The first two are checked
+# against Windows as soon as they are typed, so a mistake only costs
+# re-typing that one prompt - and they are required every run, account
+# creation or not, because Windows can verify a guess but never return the
+# real password, and the script needs the real one for the LSA secret and the
+# batch-logon tasks. The Gmail App Password is different: it is just the
+# machine env var this script set last time, so it is only asked again if it
+# is not set yet, or if you choose to replace it. Re-running is safe -
+# accounts are reused, tasks replaced. Only the reboot test is left to do by
+# hand afterwards.
 
 # --- edit only if a station differs ---------------------------------------- #
 $AutomationAccount = 'cite-automation'
@@ -127,7 +133,24 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {
 }
 if (-not $AdminPassword) { throw "Could not verify $AdminAccount's password after 3 attempts." }
 
-$SmtpPassword = Read-PasswordTwice -StripSpaces 'Gmail App Password (16 chars, not the account password, e.g. xxxx xxxx xxxx xxxx)'
+$SmtpPrompt = 'Gmail App Password (16 chars, not the account password, e.g. xxxx xxxx xxxx xxxx)'
+# Unlike the two account passwords above, this one is not re-verified against
+# anything external - it is just the machine env var this script set last
+# time, so (unlike them) it CAN be read back and reused instead of re-typed.
+$existingSmtpPassword = [Environment]::GetEnvironmentVariable('CITE_ALERT_SMTP_PASSWORD', 'Machine')
+if ($existingSmtpPassword) {
+    $keep = Read-Host "Gmail App Password is already set for $Email - keep it? (Y/n)"
+    if ($keep -match '^[Nn]') {
+        $SmtpPassword = Read-PasswordTwice -StripSpaces $SmtpPrompt
+    }
+    else {
+        $SmtpPassword = ConvertTo-SecureString -String $existingSmtpPassword -AsPlainText -Force
+        Ok 'keeping the existing Gmail App Password'
+    }
+}
+else {
+    $SmtpPassword = Read-PasswordTwice -StripSpaces $SmtpPrompt
+}
 
 # --- 1. the cite-automation account ---------------------------------------- #
 Phase '1/5  cite-automation account'
