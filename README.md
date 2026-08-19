@@ -33,7 +33,8 @@ A single command, `cite`, run unattended from Windows Task Scheduler on each sta
 
 `cite clean` stays on the admin account because it needs the rights to delete other users' acquisition data. `cite sync` drives the GUI-only License Manager, so it needs a logged-on session, while `cite renew` also watches the sync leg and reports when it stops running.
 
-A fourth task, `cite-cli lock-on-logon`, is not a `cite` command — it locks the desktop right after the automatic login, so the station never sits unlocked.
+Locking that desktop is handled separately, by two independent mechanisms so a
+single failure cannot leave the station open — see [Locking the automation desktop](#locking-the-automation-desktop).
 
 ### Why the renewal is split in two
 
@@ -46,9 +47,67 @@ Pending submissions are synchronized automatically: the first attempt runs two d
 | Account | Why it exists |
 | --- | --- |
 | `Admin` (or whatever the station's admin is called) | Runs `cite clean`, which needs privileges over other users' data. |
-| `cite-automation` | An unprivileged account that logs in automatically at boot, so `cite sync` always has a session to work in. The desktop is locked seconds later. |
+| `cite-automation` | An unprivileged account that logs in automatically at boot, so `cite sync` always has a session to work in. Its desktop is locked within seconds and kept locked. |
 
 Each account installs its own `uv`, and each task points at **its own account's** `uv.exe`. Never cross them: besides not being readable across profiles, putting `cite-automation`'s path into the `Admin` task would let anyone who compromised the auto-login account run code as `Admin`.
+
+### Locking the automation desktop
+
+`cite-automation` is signed in permanently, so its desktop must never sit open.
+Three mechanisms do that, chosen so that no two of them fail for the same reason:
+
+| Layer | What starts it | Covers |
+| --- | --- | --- |
+| **Lock watchdog** | a Run key in `cite-automation`'s profile, executed by Explorer at shell startup | the real work — retries until the lock takes, and re-locks the desktop any time it is found open |
+| **`cite-cli lock-on-logon`** | Task Scheduler, three staggered logon triggers | a second, independent launcher if Explorer never processes the Run key |
+| **Screen saver**, 1 min, *On resume, display logon screen* | the per-user screen saver settings | an unattended desktop that somehow escaped both |
+
+The watchdog is the one that matters. The other two fire once and hope; it keeps
+checking, and it writes `C:\Users\cite-automation\.cite\logs\lock.log`, which is
+the only place that says *why* a lock failed rather than just that the station
+was found unlocked.
+
+Only the screen saver touches user settings, and it is written to
+`cite-automation`'s profile alone — your own account and your microscopists'
+accounts are never given a forced lock.
+
+#### Working inside the `cite-automation` desktop
+
+The watchdog re-locks every two seconds, so signing in without disarming it first
+is unusable. It is already signed in, so you are unlocking its session, not
+starting one.
+
+1. **From your admin account**, arm the pause:
+
+   ```powershell
+   New-Item C:\ProgramData\cite-cli\lock-paused
+   ```
+
+2. **Switch user** — Start menu → your account picture → **Switch user**, or `Win+L` and pick `cite-automation` from the lock screen. Enter its password.
+3. Do your work.
+4. Leave with **Switch user** or `Win+L`. ⚠️ **Never Sign out** — that destroys the session `cite sync` needs, and it will not come back until the next reboot.
+5. **Back in admin**, re-arm:
+
+   ```powershell
+   Remove-Item C:\ProgramData\cite-cli\lock-paused
+   ```
+
+The pause expires on its own **two hours** after the file was last written, so
+forgetting step 5 cannot leave a station open indefinitely. Touch the file again
+to extend it. Both the pause and the resume are recorded in `lock.log`, so any
+gap in the locking record has a visible reason beside it.
+
+If you get caught out — signed into `cite-automation` without pausing first —
+stop the watchdog from your admin account instead of fighting the lock:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+  Where-Object { $_.CommandLine -like '*cite-lock-watchdog*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+It matches on the command line, so nothing else running as that account is
+affected, and it comes back at the next logon.
 
 ### Requirements
 
@@ -113,7 +172,13 @@ The five steps it prints, in order:
 2. Sets some needed `VARIABLES` machine-wide, so both accounts inherit them.
 3. Installs `uv` for both accounts and creates both `%USERPROFILE%\.cite\logs` folders. It runs as `cite-automation` to do the second half, which also builds that account's profile — so you never have to log into it.
 4. Enables auto-login for `cite-automation`, storing the password as an LSA secret.
-5. Registers the four tasks and reports each one.
+5. Installs the lock watchdog and its Run key, then registers the four tasks and reports each one.
+
+Re-running it on a station that is already set up is safe and is the normal way to
+apply an update: the account is reused rather than recreated, tasks are replaced in
+place, and registry keys are written without being cleared. The only thing it will
+not do is restart a watchdog that is already running in a live session — that one
+picks up the new script at the next logon, and the script says so when it happens.
 
 It also warns — without changing anything — if **fast user switching** is off. With it hidden, signing in as another user logs `cite-automation` off instead of parking its session, and `cite sync` then has no session to work in until the next reboot.
 
@@ -162,8 +227,17 @@ This is the one that proves the setup.
 
 - [ ] **Restart the PC and do not touch it.**
 - [ ] It should sign in on its own, show the desktop briefly, and land on the **lock screen** within ~15 seconds.
+- [ ] Check `C:\Users\cite-automation\.cite\logs\lock.log`. It must have gained a `locked` line.
 
-If it stays on the desktop, the lock task failed — fix that before leaving the station. If it stops at the sign-in screen, auto-login failed.
+If it stops at the sign-in screen, auto-login failed. If it stays on the desktop, `lock.log` says which half broke, which is the whole reason it exists:
+
+| `lock.log` after a reboot | Meaning |
+| --- | --- |
+| `... watchdog started` then `... locked` | Working — the watchdog locked it. |
+| `... watchdog started` and nothing else | Also working. The `lock-on-logon` task won the race and locked first, so the watchdog found the desktop already locked and had nothing to do. |
+| `... LockWorkStation returned false (attempt N)`, repeating | The watchdog is running and Windows is refusing the lock. A different problem entirely — not a timing one, and no number of extra triggers will help. |
+| empty or missing | The watchdog never started. Check that the `CiteLock` value exists under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` **while signed in as `cite-automation`**, and that `C:\ProgramData\cite-cli\cite-lock-watchdog.ps1` is present. |
+| `... paused for maintenance` | A `lock-paused` file is in force. Delete `C:\ProgramData\cite-cli\lock-paused`. |
 
 - [ ] The next morning, confirm `cite sync` and `cite renew` both ran overnight: check `C:\Users\cite-automation\.cite\logs\cite.log` and the Last Run Result of each task.
 
@@ -285,7 +359,92 @@ Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Passw
 
 ### Phase 5 — Lock the session immediately after login
 
-Without this, the station boots to an unlocked desktop.
+Without this, the station boots to an unlocked desktop. Three layers, because
+each one fails for a different reason.
+
+#### 5a. The lock watchdog (primary)
+
+- [ ] Save this as `C:\ProgramData\cite-cli\cite-lock-watchdog.ps1`:
+
+```powershell
+$ErrorActionPreference = 'SilentlyContinue'
+Add-Type @"
+using System.Runtime.InteropServices;
+public static class CiteLock {
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool LockWorkStation();
+}
+"@
+
+$logDir = Join-Path $env:USERPROFILE '.cite\logs'
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$log = Join-Path $logDir 'lock.log'
+# Announce startup unconditionally. The lock-on-logon task can win the race and
+# lock first, leaving this watchdog with nothing to do and nothing to log - and
+# an empty log would then read as "it never started", which is the opposite
+# diagnosis. One line at launch keeps the two cases apart.
+"$(Get-Date -f s) watchdog started (pid $PID)" | Add-Content $log
+
+$pausePath = Join-Path $env:ProgramData 'cite-cli\lock-paused'
+$wasPaused = $false
+
+$fails = 0
+while ($true) {
+    $pause = Get-Item $pausePath -ErrorAction SilentlyContinue
+    if ($pause -and $pause.LastWriteTime -gt (Get-Date).AddHours(-2)) {
+        if (-not $wasPaused) {
+            "$(Get-Date -f s) paused for maintenance" | Add-Content $log
+            $wasPaused = $true
+        }
+        Start-Sleep -Seconds 5
+        continue
+    }
+    if ($wasPaused) {
+        "$(Get-Date -f s) pause ended, locking resumed" | Add-Content $log
+        $wasPaused = $false
+    }
+
+    if (Get-Process LogonUI -ErrorAction SilentlyContinue) {
+        $fails = 0
+        Start-Sleep -Seconds 5
+        continue
+    }
+    if ([CiteLock]::LockWorkStation()) {
+        "$(Get-Date -f s) locked" | Add-Content $log
+        $fails = 0
+        Start-Sleep -Seconds 5
+    }
+    else {
+        if ($fails % 30 -eq 0) {
+            "$(Get-Date -f s) LockWorkStation returned false (attempt $($fails + 1))" |
+                Add-Content $log
+        }
+        $fails++
+        Start-Sleep -Seconds 2
+    }
+}
+```
+
+It calls the same `LockWorkStation` that `rundll32` does. What it adds is that
+`rundll32` **throws the return value away** — a refused lock was silent and
+unrecoverable. This checks it, retries every 2 s until it takes, re-locks if the
+desktop is ever found open again, and leaves a log. Nobody is meant to be using
+this desktop, so re-locking is always the right answer.
+
+- [ ] Signed in **as `cite-automation`**, add the Run key that starts it:
+
+```powershell
+Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name CiteLock `
+  -Value 'powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\ProgramData\cite-cli\cite-lock-watchdog.ps1"'
+```
+
+A Run key is run by Explorer as part of shell startup, so it cannot fire before
+the session is ready, and it cannot miss an event the way a Task Scheduler **at
+log on** trigger does when the service is still starting during an auto-login.
+That last failure is why staggered triggers never helped: all of them sat inside
+the same early window and shared one cause.
+
+#### 5b. The lock task (independent second launcher)
 
 - [ ] In **Task Scheduler**, create a task:
 
@@ -293,19 +452,34 @@ Without this, the station boots to an unlocked desktop.
   - Name: **cite-cli lock-on-logon**
   - **Run only when user is logged on**, user = `cite-automation`
   - ⚠️ do **not** check "Run with highest privileges"
-- **Triggers** — **three**:
-  - **At log on** → Specific user `cite-automation` → **Delay: 5 seconds**
-  - **At log on** → Specific user `cite-automation` → **Delay: 10 seconds**
-  - **At log on** → Specific user `cite-automation` → **Delay: 15 seconds**
+- **Triggers** — **five**: **At log on** → Specific user `cite-automation`, with **Delay: 5**, **10**, **15**, **30**, and **45 seconds**
 - **Actions**
   - Start a program → `C:\Windows\System32\rundll32.exe`
   - Arguments: `user32.dll,LockWorkStation` (no space after the comma)
 - **Conditions**: uncheck everything
-- **Settings**: only **Allow task to be run on demand**
+- **Settings**: **Allow task to be run on demand**, **Stop the task if it runs longer than: 1 hour**, and under *If the task is already running* choose **Run a new instance in parallel**
 
-Three triggers because locking too early can silently do nothing. The second and third are the safety net; locking an already-locked session is a harmless no-op.
+That last setting matters more than it looks. The default, **Do not start a new
+instance**, silently discards every later trigger whenever an earlier one is
+still running — so all the backup attempts vanished in exactly the case they
+existed for.
 
-- [ ] **Screen saver safety net.** Logged in as `cite-automation`, run (`Win+R`) `control desk.cpl,,@screensaver` and set **Screen saver: Blank**, **Wait: 1 minute**, and check **On resume, display logon screen**. This is the only layer that Windows enforces continuously, so it catches a station that somehow missed all three triggers.
+The later delays only help if the session simply was not ready yet. A trigger
+delay is counted from when Task Scheduler *observes* the logon, so if the service
+was still starting during the auto-login and missed the event outright, no number
+of triggers at any delay will fire. That is the gap the watchdog covers. Keep this task on `rundll32` rather than the watchdog: it is then a
+genuinely independent mechanism, not a second copy competing for the same log.
+
+#### 5c. Screen saver (backstop)
+
+- [ ] Logged in as `cite-automation`, run (`Win+R`) `control desk.cpl,,@screensaver` and set **Screen saver: Blank**, **Wait: 1 minute**, and check **On resume, display logon screen**.
+
+This only fires after a minute of no input, so it cannot help while somebody is
+actively at an unlocked desktop — but it covers the unattended case, and it is
+per-user, so it never affects your microscopists' accounts. (A machine-wide
+inactivity lock, `InactivityTimeoutSecs`, is deliberately **not** used here: it
+would lock every user on the station, including someone watching a long
+acquisition without touching the mouse.)
 
 ### Phase 6 — Create the three scheduled tasks
 
@@ -373,6 +547,8 @@ Now go through [Verify the station](#verify-the-station).
 **Disable auto-login:** `netplwiz` → re-check **Users must enter a user name and password to use this computer**. (Or run Sysinternals Autologon and click **Disable**.)
 
 **Remove the tasks:** delete `cite-cli clean`, `cite-cli renew`, `cite-cli sync` and `cite-cli lock-on-logon` from Task Scheduler.
+
+**Remove the lock watchdog:** delete the `CiteLock` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` while signed in as `cite-automation`, then delete `C:\ProgramData\cite-cli\cite-lock-watchdog.ps1`. A watchdog already running keeps going until that session ends.
 
 **Remove the account:** `Remove-LocalUser -Name "cite-automation"` from an elevated PowerShell. Its profile folder under `C:\Users\` must be deleted separately if you want the logs and state gone too.
 
@@ -794,6 +970,10 @@ The command ran and failed. Open that account's log — `renew`/`sync` under `C:
 
 ### The station is on the desktop, not the lock screen, after a reboot
 
-**Cause:** the `cite-cli lock-on-logon` task did not fire, or fired before the session was ready.
+**Read `C:\Users\cite-automation\.cite\logs\lock.log` first.** It distinguishes the two causes, which need opposite fixes — see the table under [The reboot test](#the-reboot-test).
 
-**Fix:** confirm the task exists with all **three** triggers (5 s, 10 s, 15 s) and that "Run with highest privileges" is **un**checked. Raise the delays if the station is slow. The screen-saver setting from [Phase 5](#phase-5--lock-the-session-immediately-after-login) is the backstop — verify **On resume, display logon screen** is checked.
+**If the log is empty or missing,** the watchdog never started. Signed in as `cite-automation`, confirm the `CiteLock` value exists under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` and that `C:\ProgramData\cite-cli\cite-lock-watchdog.ps1` is present and readable by that account.
+
+**If it repeats `LockWorkStation returned false`,** the launcher is fine and Windows is refusing the lock itself. Adding triggers or raising delays will not help. Check for a policy disabling **Lock Computer** (`DisableLockWorkstation` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System`), and confirm the task's "Run with highest privileges" is **un**checked.
+
+**If it says `paused for maintenance`,** somebody left a pause file behind. Delete `C:\ProgramData\cite-cli\lock-paused`. It would have expired by itself two hours after it was last written.

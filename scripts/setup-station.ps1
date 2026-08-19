@@ -232,6 +232,20 @@ try {
     Set-ItemProperty $desk -Name ScreenSaverIsSecure -Value '1'
     Set-ItemProperty $desk -Name ScreenSaveTimeOut -Value '60'
     Set-ItemProperty $desk -Name 'SCRNSAVE.EXE' -Value "$env:SystemRoot\System32\scrnsave.scr"
+    # Primary lock. Explorer runs the Run key as part of shell startup, so it
+    # cannot fire before the session is ready, and it cannot miss an event the
+    # way Task Scheduler's "at log on" trigger does when the service is still
+    # coming up during an auto-login - the failure three staggered triggers
+    # could never fix, because all three sat inside that same early window.
+    # Never `New-Item -Force` this key. On the registry provider that recreates
+    # an existing key and drops the values inside it - and Run always exists,
+    # often holding other software's startup entries. Only create it if absent.
+    $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    if (-not (Test-Path $run)) { New-Item -Path $run -Force | Out-Null }
+    $watchdog = "$env:ProgramData\cite-cli\cite-lock-watchdog.ps1"
+    Set-ItemProperty $run -Name CiteLock -Value (
+        'powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass ' +
+        "-File `"$watchdog`"")
     $result.uv = $uv
     $result.ok = (Test-Path $uv)
 }
@@ -241,6 +255,86 @@ finally { $result | ConvertTo-Json | Set-Content (Join-Path $cite 'setup-result.
 $bootstrapPath = "$env:ProgramData\cite-cli\setup-user-bootstrap.ps1"
 New-Item -ItemType Directory -Force -Path (Split-Path $bootstrapPath) | Out-Null
 Set-Content -Path $bootstrapPath -Value $bootstrap -Encoding UTF8
+
+# The lock itself is the same LockWorkStation call the old rundll32 action made.
+# What this adds is everything around it: rundll32 discards the return value, so
+# a refused lock was silent and unrecoverable. This checks it, keeps retrying
+# until it takes, re-locks if the desktop is ever found open again, and leaves a
+# log - nobody is meant to be using this desktop, so re-locking is always right.
+$lockWatchdog = @'
+$ErrorActionPreference = 'SilentlyContinue'
+Add-Type @"
+using System.Runtime.InteropServices;
+public static class CiteLock {
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool LockWorkStation();
+}
+"@
+
+$logDir = Join-Path $env:USERPROFILE '.cite\logs'
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$log = Join-Path $logDir 'lock.log'
+# Announce startup unconditionally. The lock-on-logon task can win the race and
+# lock first, leaving this watchdog with nothing to do and nothing to log - and
+# an empty log would then read as "it never started", which is the opposite
+# diagnosis. One line at launch keeps the two cases apart.
+"$(Get-Date -f s) watchdog started (pid $PID)" | Add-Content $log
+
+# Maintenance escape hatch. Signing in as cite-automation with this running
+# would re-lock the desktop every two seconds, so from the admin account, before
+# switching over:
+#     New-Item C:\ProgramData\cite-cli\lock-paused
+# The pause expires two hours after the file was last written - a forgotten file
+# can never leave the station sitting open. Touch it again to extend it, or
+# delete it to resume locking at once. LastWriteTime, not CreationTime: NTFS
+# file tunneling can hand a recreated file the original creation stamp, which
+# would make a fresh pause look expired the moment it was made.
+$pausePath = Join-Path $env:ProgramData 'cite-cli\lock-paused'
+$wasPaused = $false
+
+$fails = 0
+while ($true) {
+    $pause = Get-Item $pausePath -ErrorAction SilentlyContinue
+    if ($pause -and $pause.LastWriteTime -gt (Get-Date).AddHours(-2)) {
+        if (-not $wasPaused) {
+            "$(Get-Date -f s) paused for maintenance" | Add-Content $log
+            $wasPaused = $true
+        }
+        Start-Sleep -Seconds 5
+        continue
+    }
+    if ($wasPaused) {
+        "$(Get-Date -f s) pause ended, locking resumed" | Add-Content $log
+        $wasPaused = $false
+    }
+
+    # LogonUI.exe exists exactly while the lock screen is up. Its absence means
+    # this desktop is sitting open, whatever the lock task believes it did.
+    if (Get-Process LogonUI -ErrorAction SilentlyContinue) {
+        $fails = 0
+        Start-Sleep -Seconds 5
+        continue
+    }
+    if ([CiteLock]::LockWorkStation()) {
+        "$(Get-Date -f s) locked" | Add-Content $log
+        $fails = 0
+        # Give LogonUI a moment to appear, so one lock is not logged twice.
+        Start-Sleep -Seconds 5
+    }
+    else {
+        # First failure, then every 30th: a permanently refused lock must not
+        # fill the disk at one line every two seconds.
+        if ($fails % 30 -eq 0) {
+            "$(Get-Date -f s) LockWorkStation returned false (attempt $($fails + 1))" |
+                Add-Content $log
+        }
+        $fails++
+        Start-Sleep -Seconds 2
+    }
+}
+'@
+$lockWatchdogPath = "$env:ProgramData\cite-cli\cite-lock-watchdog.ps1"
+Set-Content -Path $lockWatchdogPath -Value $lockWatchdog -Encoding UTF8
 
 $automationUv = Join-Path (Get-ProfilePath $AutomationAccount) '.local\bin\uv.exe'
 # Drop any result from an earlier run, so a failure here cannot read as success.
@@ -458,15 +552,22 @@ function Add-CiteTask {
     }
 }
 
-# lock-on-logon: three staggered triggers, because locking too early can
+# lock-on-logon: five staggered triggers, because locking too early can
 # silently do nothing. Locking an already-locked session is a harmless no-op.
+# The later ones only help the "session was not ready yet" case: a trigger delay
+# is counted from when Task Scheduler observes the logon, so if the service was
+# still starting and missed the event, no delay recovers it. That gap is what
+# the watchdog covers - this task is only the independent second launcher.
 Add-CiteTask -name 'cite-cli lock-on-logon' `
     -action (New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\rundll32.exe" -Argument 'user32.dll,LockWorkStation') `
     -trigger @(
     (New-LogonTrigger $automationUser 'PT5S'),
     (New-LogonTrigger $automationUser 'PT10S'),
-    (New-LogonTrigger $automationUser 'PT15S')) `
-    -settings (New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries) `
+    (New-LogonTrigger $automationUser 'PT15S'),
+    (New-LogonTrigger $automationUser 'PT30S'),
+    (New-LogonTrigger $automationUser 'PT45S')) `
+    -settings (New-ScheduledTaskSettingsSet -MultipleInstances Parallel -AllowStartIfOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 1)) `
     -principal (New-ScheduledTaskPrincipal -UserId $automationUser -LogonType Interactive -RunLevel Limited)
 
 # clean: stays on the admin account, which has the rights to delete other
@@ -559,21 +660,62 @@ foreach ($ppms in $found) {
     else { Ok "'$name' runs as '$runsAs'" }
 }
 
+# --- desktop lock ---------------------------------------------------------- #
+Phase 'desktop lock'
+
+Ok "lock watchdog written to $lockWatchdogPath"
+Note "it starts from a Run key in $AutomationAccount's profile at every logon,"
+Note 'retries until the lock takes, and re-locks the desktop if it is ever'
+Note "found open. Its record is $($env:SystemDrive)\Users\$AutomationAccount\.cite\logs\lock.log"
+
+# A watchdog already running in a live session keeps executing the copy of the
+# script it started with. Re-running this cannot reach into that session to
+# restart it, so say so rather than let a stale one look like a failed update.
+$running = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*cite-lock-watchdog*' })
+if ($running) {
+    Note "$($running.Count) watchdog(s) already running - each keeps the script it"
+    Note 'started with until the next logon. Nothing to do; a reboot picks this up.'
+}
+
+# Warn, never delete: the pause may belong to whoever is mid-maintenance right
+# now, and silently re-arming the lock under them would be worse than a stale
+# file - which expires on its own in two hours regardless.
+$pauseFile = "$env:ProgramData\cite-cli\lock-paused"
+if (Test-Path $pauseFile) {
+    $expires = (Get-Item $pauseFile).LastWriteTime.AddHours(2)
+    if ($expires -gt (Get-Date)) {
+        Warn "locking is PAUSED until $expires"
+        Note "delete $pauseFile to re-arm it now"
+    }
+    else { Ok "an expired pause file is present and is being ignored" }
+}
+else { Ok 'locking is armed (no pause file)' }
+
 # --- done ------------------------------------------------------------------ #
 Write-Host @"
 
 Left to do by hand:
-  1. Make sure that in the Public user there is a folder named `NIS_Elements` that contains the `licmgr_s.exe` file.
-  1. Log in to the `CITE Automation` user and lock it (Win + L or switch user).
-  2. In the `AdminAccount` account, run each task once in Task Scheduler (renew first, sync after) and check the log files in `C:\Users\cite-automation\.cite\logs` and `C:\Users\<AdminAccount>\.cite\logs` to ensure they completed successfully.
+  1. Make sure the Public user has a folder named NIS_Elements containing
+     licmgr_s.exe.
+  2. In the $AdminAccount account, run each task once in Task Scheduler (renew
+     first, sync after) and check the logs under
+     C:\Users\$AutomationAccount\.cite\logs and C:\Users\$AdminAccount\.cite\logs
   3. Check an alert email arrives under BOTH accounts:
      uvx --from "$RepoUrl" cite test-alert
-  4. Reboot and do not touch it: the station must sign in on its own and land
-     on the lock screen within ~15 seconds.
-  2. Check an alert email arrives under BOTH accounts:
-     uvx --from "$RepoUrl" cite test-alert
-  3. Reboot and do not touch it: the station must sign in on its own and land
-     on the lock screen within ~15 seconds.
+  4. Reboot and do not touch it. The station must sign in on its own and land on
+     the lock screen within ~15 seconds, and
+     C:\Users\$AutomationAccount\.cite\logs\lock.log must gain a locked line.
+     That log is the check that matters - if the lock ever fails, it says
+     whether nothing ran at all or LockWorkStation itself was refused.
+
+To work inside the $AutomationAccount desktop later, pause the lock FIRST, from
+this account:
+     New-Item $env:ProgramData\cite-cli\lock-paused
+then switch user. Leave with Switch user or Win+L - never Sign out, which
+destroys the session cite sync needs. Then:
+     Remove-Item $env:ProgramData\cite-cli\lock-paused
+The pause expires by itself after 2 hours if you forget.
 "@
 
 # No `exit` here on purpose: it would close the window when this script is run
