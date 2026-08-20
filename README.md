@@ -384,7 +384,9 @@ Runs the headless part of the renewal loop daily, whether the Windows user is lo
 /c "tasklist | findstr /I nis_ar.exe > nul 2>&1 || "<path/to/uv.exe>" tool run --refresh --from git+https://github.com/CITE-HMS/cite-cli cite renew --email you@example.com --full-name "Your Name" --url nikon > "%USERPROFILE%\.cite\logs\bootstrap.log" 2>&1"
 ```
 
-Configure this task with **Run whether user is logged on or not**. Our default setup runs `cite sync` by hand rather than scheduling it (see [Applying a pending renewal](#applying-a-pending-renewal)) — `renew` still detects and confirms a renewal applied that way on its next run. If a station also schedules `cite sync` (see below), schedule `renew` *after* it (e.g. 01:15 against sync's 01:00) so it can pick up what sync just applied and send the confirmation email the same night. The command line does not need a `--no-sync` flag; headless mode is the default. `--sync` remains available as an explicit legacy override.
+Configure this task with **Run whether user is logged on or not**. Our default setup applies a pending renewal by running `cite sync` by hand (see [Applying a pending renewal](#applying-a-pending-renewal)) — `renew` still detects and confirms a renewal applied that way on its next run. The command line does not need a `--no-sync` flag; headless mode is the default.
+
+`--sync` makes `renew` also attempt a due synchronization itself, in the same run — but it drives the same GUI-only License Manager dialog `cite sync` does, so it only works in an interactive session. Use it only when running `cite renew` by hand while signed in (e.g. instead of running `cite sync` separately); never add it to the scheduled task's arguments, since the headless run has no session for it to work in.
 
 On most days all steps exit cleanly — no renewal detected and the license is not yet within the 14-day window — so the net effect is a quick log line and exit 0.
 
@@ -495,7 +497,7 @@ cite renew --email EMAIL --full-name NAME --url TARGET [OPTIONS]
 | `--days-before` |  | `14` |  | Submit only when the license expires within this many days. |
 | `--dry-run` | `-n` | `False` |  | Print what would be submitted without making any HTTP request or generating a `.c2l`. |
 | `--force` | `-f` | `False` |  | Submit even if the license is outside the renewal window or was already submitted this cycle. |
-| `--sync` / `--no-sync` |  | `--no-sync` |  | Opt into the legacy combined workflow that also runs a due GUI synchronization. Prefer a separate scheduled `cite sync`. |
+| `--sync` / `--no-sync` |  | `--no-sync` |  | Also attempt a due GUI synchronization as part of this run. Drives the same GUI-only License Manager dialog as `cite sync`, so it only works in an interactive session — use it only when running `cite renew` by hand while signed in, never on the scheduled headless task. |
 
 ### `cite sync`
 

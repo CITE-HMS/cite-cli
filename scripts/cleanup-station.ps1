@@ -4,9 +4,8 @@
 # the account itself) on a station that already had it applied, before
 # re-running the new setup-station.ps1 - which no longer uses a separate
 # account at all: `cite clean` and `cite renew` both run as your admin
-# account, whether or not anyone is signed in. `cite sync` is run by hand,
-# signed in to that same admin account, whenever a submitted renewal needs to
-# be applied.
+# account, whether or not anyone is signed in. After Nikon replies with the
+# updated license, run `cite sync` to apply it.
 #
 # Removes:
 #   1. the 'cite-cli sync' and 'cite-cli lock-on-logon' scheduled tasks (and
@@ -14,7 +13,7 @@
 #   2. auto-login for cite-automation (Winlogon keys + the LSA secret)
 #   3. the lock watchdog: its Run key and screen-saver settings inside
 #      cite-automation's profile, and its script files under ProgramData
-#   4. the cite-automation account itself
+#   4. the cite-automation account itself, including its profile folder
 #
 # Leaves alone: the CITE_ALERT_* machine-wide env vars and the 'cite-cli
 # clean' task. The old 'cite-cli renew' task (still registered to run as
@@ -207,19 +206,23 @@ foreach ($f in 'cite-lock-watchdog.ps1', 'lock-paused', 'setup-user-bootstrap.ps
 Phase '4/4  cite-automation account'
 
 if (Get-LocalUser -Name $AutomationAccount -ErrorAction SilentlyContinue) {
+    # Resolve the profile path via its SID before removing the account - once
+    # removed, the SID lookup can no longer resolve, and Get-ProfilePath would
+    # fall back to guessing "C:\Users\<name>", which is usually but not always
+    # where it actually lives.
+    $userProfile = Get-ProfilePath $AutomationAccount
     # 'cite-cli renew' (if still registered) runs as this account and will
     # fail until setup-station.ps1 replaces it to run as your admin account
     # instead - expected, since that is the very next step after this script.
     Remove-LocalUser -Name $AutomationAccount
     Ok "account '$AutomationAccount' removed"
-    $userProfile = Get-ProfilePath $AutomationAccount
     if (Test-Path $userProfile) {
-        Note 'its profile folder is still on disk and is now orphaned (its SID no'
-        Note "longer resolves): $userProfile"
-        Note 'harmless to leave - a recreated account gets a new folder alongside it.'
-        Note 'To reclaim the name instead, once nothing in its .cite\logs is still'
-        Note 'needed:'
-        Note "  Remove-Item -Recurse -Force `"$userProfile`""
+        Remove-Item -Recurse -Force $userProfile -ErrorAction SilentlyContinue
+        if (Test-Path $userProfile) {
+            Warn "could not fully remove $userProfile - some files may still be in use"
+            Note 'sign the account out (or reboot) and re-run this script to finish removing it'
+        }
+        else { Ok "profile folder removed: $userProfile" }
     }
 }
 else {

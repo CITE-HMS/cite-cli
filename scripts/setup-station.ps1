@@ -210,37 +210,19 @@ Add-CiteTask -name 'cite-cli renew' `
     -settings (New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Hours 1))
 
-# Registering replaces the task at that path only, and task names are unique
-# per folder - so an older copy in a subfolder, or one whose name differs by a
-# stray space, keeps running alongside the two above. This also catches
-# leftovers from the old cite-automation setup (`cite-cli sync`,
-# `cite-cli lock-on-logon`) on a station that has not run cleanup-station.ps1.
-$ours = 'cite-cli clean', 'cite-cli renew'
-$strays = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
-        $_.TaskName -like '*cite*' -and -not ($_.TaskPath -eq '\' -and $ours -contains $_.TaskName)
-    })
-foreach ($s in $strays) {
-    Warn "leftover task '$($s.TaskPath)$($s.TaskName)' will run alongside ours"
-    Note "remove it with:"
-    Note "  Unregister-ScheduledTask -TaskName '$($s.TaskName)' -TaskPath '$($s.TaskPath)' -Confirm:`$false"
-}
-
 # --- done ------------------------------------------------------------------ #
 Write-Host @"
 
 Left to do by hand:
   1. Make sure the Public user has a folder named NIS_Elements containing
-     licmgr_s.exe - cite sync needs it when you run it by hand below.
+     licmgr_s.exe.
   2. Run each task once in Task Scheduler (renew first, clean after) and
      check the logs under C:\Users\$AdminAccount\.cite\logs
   3. Check an alert email arrives:
      uvx --from "$RepoUrl" cite test-alert
 
-When Nikon replies to a submitted renewal, sign in to $AdminAccount on this
-station and run:
+After Nikon replies with the updated license, run:
      uvx --from "$RepoUrl" cite sync
-cite renew already sends an alert if a pending submission goes 4+ days
-without a recorded sync attempt, so a forgotten station does not go quiet.
 "@
 
 # No `exit` here on purpose: it would close the window when this script is run
