@@ -58,6 +58,25 @@ function Invoke-Native {
     & { $ErrorActionPreference = 'SilentlyContinue'; & $Exe @ExeArgs 2>&1 }
 }
 
+function Invoke-NativeTimed {
+    # Same purpose as Invoke-Native, but bounded. takeown /R (and icacls /T)
+    # walking a real Windows profile can hit legacy backward-compat junctions
+    # - "AppData\Local\Application Data" or "Local Settings" pointing back
+    # into "AppData\Local" - and loop through the same tree indefinitely
+    # instead of failing, a documented takeown behavior. Kills the process
+    # and reports a timeout rather than blocking the whole script forever.
+    # Returns $true/$false for whether it finished; $LASTEXITCODE is only
+    # meaningful when it did.
+    param([Parameter(Mandatory)][string]$Exe, [string[]]$ExeArgs = @(), [int]$TimeoutSeconds = 90)
+    $proc = Start-Process -FilePath $Exe -ArgumentList $ExeArgs -PassThru -WindowStyle Hidden
+    if ($proc.WaitForExit($TimeoutSeconds * 1000)) {
+        $global:LASTEXITCODE = $proc.ExitCode
+        return $true
+    }
+    try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+    return $false
+}
+
 function Get-ProfilePath {
     param($name)
     try {
@@ -317,8 +336,14 @@ if (Test-Path $userProfile) {
     # explicitly takes ownership first. /A assigns ownership to the
     # Administrators group rather than just this session's user, so it stays
     # accessible regardless of who runs this script next time.
-    Invoke-Native takeown.exe @('/F', $userProfile, '/R', '/D', 'Y', '/A') | Out-Null
-    Invoke-Native icacls.exe @($userProfile, '/grant', '*S-1-5-32-544:(OI)(CI)F', '/T', '/C', '/Q') | Out-Null
+    if (Invoke-NativeTimed -Exe takeown.exe -ExeArgs @('/F', $userProfile, '/R', '/D', 'Y', '/A') -TimeoutSeconds 90) {
+        Invoke-NativeTimed -Exe icacls.exe -ExeArgs @($userProfile, '/grant', '*S-1-5-32-544:(OI)(CI)F', '/T', '/C', '/Q') -TimeoutSeconds 60 | Out-Null
+    }
+    else {
+        Warn "takeown timed out after 90s on $userProfile"
+        Note 'likely a legacy junction (Application Data or Local Settings) looping back on itself - a known takeown /R hang, not this script stalling'
+        Note 'the delete attempt below may still fail without ownership fixed; skip this account by hand if it keeps timing out'
+    }
     Remove-Item -Recurse -Force $userProfile -ErrorAction SilentlyContinue
     if (Test-Path $userProfile) {
         Warn "could not fully remove $userProfile - some files may still be in use"
