@@ -77,6 +77,29 @@ function Invoke-NativeTimed {
     return $false
 }
 
+function Clear-ReparsePoints {
+    # Every Windows profile carries several legacy backward-compat junctions
+    # (e.g. "Local Settings" and "Application Data" pointing back into
+    # "AppData\Local"/"AppData\Roaming"). Neither takeown /R nor a plain
+    # recursive delete treats a reparse point as the single link-object it
+    # actually is - both can walk straight into it and loop through the same
+    # tree forever instead of finishing, which is what was hanging. Unlink
+    # every reparse point under $Path first, each as its own object, never
+    # descending into whatever it points at - so nothing recursive
+    # downstream can get stuck on one again.
+    param($Path)
+    $items = Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    foreach ($item in $items) {
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            try { $item.Delete() }
+            catch { Invoke-Native cmd.exe @('/c', "rmdir `"$($item.FullName)`"") | Out-Null }
+        }
+        elseif ($item.PSIsContainer) {
+            Clear-ReparsePoints -Path $item.FullName
+        }
+    }
+}
+
 function Get-ProfilePath {
     param($name)
     try {
@@ -330,6 +353,9 @@ else {
     $userProfile = "$env:SystemDrive\Users\$AutomationAccount"
 }
 if (Test-Path $userProfile) {
+    Clear-ReparsePoints -Path $userProfile
+    Ok 'cleared legacy junctions inside the profile'
+
     # Removing the account does not touch the folder's NTFS permissions - it
     # is still owned by (and ACL'd to) that account's now-orphaned SID, so
     # even an elevated administrator has no access to it until someone
@@ -341,10 +367,20 @@ if (Test-Path $userProfile) {
     }
     else {
         Warn "takeown timed out after 90s on $userProfile"
-        Note 'likely a legacy junction (Application Data or Local Settings) looping back on itself - a known takeown /R hang, not this script stalling'
         Note 'the delete attempt below may still fail without ownership fixed; skip this account by hand if it keeps timing out'
     }
-    Remove-Item -Recurse -Force $userProfile -ErrorAction SilentlyContinue
+
+    # Bounded the same way, as a second safety net: Remove-Item -Recurse has
+    # its own long-documented history of the identical junction problem in
+    # Windows PowerShell 5.1. Runs as a background job so a stuck delete can
+    # be killed instead of blocking the rest of the script.
+    $job = Start-Job -ScriptBlock { param($p) Remove-Item -Recurse -Force $p -ErrorAction SilentlyContinue } -ArgumentList $userProfile
+    if (-not (Wait-Job $job -Timeout 90)) {
+        Stop-Job $job -ErrorAction SilentlyContinue
+        Warn 'profile deletion timed out after 90s'
+    }
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+
     if (Test-Path $userProfile) {
         Warn "could not fully remove $userProfile - some files may still be in use"
         Note 'sign the account out (or reboot) and re-run this script to finish removing it'
