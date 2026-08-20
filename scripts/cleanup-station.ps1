@@ -78,8 +78,15 @@ Phase '1/5  sign out any active session'
 # quser's SESSIONNAME column is blank for a disconnected session, which
 # shifts the remaining columns left - match the numeric ID directly instead
 # of counting whitespace-separated fields.
+# quser writes "No User exists for ..." to its own stderr when the account
+# has no session - under Windows PowerShell 5.1 that text becomes a
+# terminating error under $ErrorActionPreference = 'Stop' even with 2>$null,
+# since the redirect only affects PowerShell's error stream, not the
+# synthetic ErrorRecord native stderr text gets wrapped into. Run it inside
+# an isolated scope with the preference relaxed just for this call so a
+# normal "no session" outcome can never abort the whole script.
 $loggedOff = 0
-$quserLines = quser $AutomationAccount 2>$null
+$quserLines = & { $ErrorActionPreference = 'SilentlyContinue'; quser $AutomationAccount 2>$null }
 if ($LASTEXITCODE -eq 0) {
     foreach ($line in ($quserLines | Select-Object -Skip 1)) {
         if ($line -match '^\s*>?\S+\s+(?:\S+\s+)?(\d+)\s+\S+') {
