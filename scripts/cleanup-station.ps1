@@ -140,11 +140,16 @@ Ok 'AutoAdminLogon disabled and the stored sign-in identity cleared'
 # The password itself lives as an LSA private secret, never in the registry -
 # the two lines above never touched it. Delete it the way it was written:
 # LsaStorePrivateData with a NULL value deletes the secret it names.
-if (-not ('CiteLsaRemove' -as [type])) {
-    Add-Type -TypeDefinition @'
+# The type name is unique per run: a type added via Add-Type lives for the
+# rest of the PowerShell PROCESS, not just this script - re-running via
+# `irm | iex` in the same window without opening a fresh one would otherwise
+# silently keep calling whatever version of this class was compiled the
+# first time, since a fixed name can never be redefined once loaded.
+$lsaTypeName = "CiteLsaRemove_$([guid]::NewGuid().ToString('N'))"
+Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
-public static class CiteLsaRemove
+public static class $lsaTypeName
 {
     [StructLayout(LayoutKind.Sequential)]
     private struct LSA_UNICODE_STRING { public ushort Length; public ushort MaximumLength; public IntPtr Buffer; }
@@ -187,10 +192,9 @@ public static class CiteLsaRemove
         finally { Marshal.FreeHGlobal(k.Buffer); LsaClose(policy); }
     }
 }
-'@
-}
+"@
 try {
-    $lsaError = [CiteLsaRemove]::Remove('DefaultPassword')
+    $lsaError = ([type]$lsaTypeName)::Remove('DefaultPassword')
     if ($lsaError -eq 0) { Ok 'auto-login LSA secret removed' }
     elseif ($lsaError -eq 2) { Ok 'no auto-login LSA secret to remove' }
     else { Warn "could not remove the LSA secret (win32 error $lsaError)" }
@@ -201,6 +205,21 @@ catch {
 
 # --- 4. the lock watchdog ----------------------------------------------------#
 Phase '4/5  lock watchdog'
+
+# A prior run's own reg.exe unload below can fail to fully release this
+# temp-mounted hive (a lingering handle, an interrupted run, etc.) - once
+# that happens it stays mounted at the OS level across every later script
+# run, regardless of PowerShell session, and keeps NTUSER.DAT locked
+# indefinitely with no live user session in sight. Clear it before doing
+# anything else, since it is exactly what step 5/5's profile deletion needs
+# released.
+if (Test-Path 'Registry::HKEY_USERS\CiteCleanupHive') {
+    [gc]::Collect()
+    [gc]::WaitForPendingFinalizers()
+    & reg.exe unload 'HKU\CiteCleanupHive' 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { Ok 'released a registry hive left mounted by an earlier run' }
+    else { Warn 'a registry hive from an earlier run is still mounted (HKU\CiteCleanupHive) - a reboot will clear it' }
+}
 
 $sid = $null
 try {
