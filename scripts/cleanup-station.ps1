@@ -297,13 +297,21 @@ if (Get-LocalUser -Name $AutomationAccount -ErrorAction SilentlyContinue) {
 }
 else {
     Ok "account '$AutomationAccount' already gone"
-    # A prior run's profile deletion below can fail (files still locked by a
-    # session that wasn't yet signed out) while the account removal itself
-    # still went through - retry the folder even when there's no account left
-    # to resolve its SID from, using the same default path Windows uses.
+    # The account can be gone while its profile folder is still stuck behind
+    # its now-orphaned SID's permissions (see below) - retry the folder even
+    # when there's no account left to resolve its SID from, using the same
+    # default path Windows uses.
     $userProfile = "$env:SystemDrive\Users\$AutomationAccount"
 }
 if (Test-Path $userProfile) {
+    # Removing the account does not touch the folder's NTFS permissions - it
+    # is still owned by (and ACL'd to) that account's now-orphaned SID, so
+    # even an elevated administrator has no access to it until someone
+    # explicitly takes ownership first. /A assigns ownership to the
+    # Administrators group rather than just this session's user, so it stays
+    # accessible regardless of who runs this script next time.
+    & takeown.exe /F $userProfile /R /D Y /A 2>&1 | Out-Null
+    & icacls.exe $userProfile /grant '*S-1-5-32-544:(OI)(CI)F' /T /C /Q 2>&1 | Out-Null
     Remove-Item -Recurse -Force $userProfile -ErrorAction SilentlyContinue
     if (Test-Path $userProfile) {
         Warn "could not fully remove $userProfile - some files may still be in use"
