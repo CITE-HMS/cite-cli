@@ -65,12 +65,6 @@ uvx --from "git+https://github.com/CITE-HMS/cite-cli" cite sync
 
 [`scripts/setup-station.ps1`](./scripts/setup-station.ps1) does the whole setup in one shot, as whichever admin account you run it from: sets the alert variables machine-wide, installs `uv` and creates the log folder, and registers the two scheduled tasks (`clean`, `renew`).
 
-> **Station already has the old `cite-automation` setup?** Run [`scripts/cleanup-station.ps1`](./scripts/cleanup-station.ps1) first. It removes the `cite-cli sync` and `cite-cli lock-on-logon` tasks, disables auto-login, removes the lock watchdog, and removes the `cite-automation` account — without touching `cite-cli clean` or the alert variables. Then run the setup script below, signed in as whichever admin account should own both tasks from now on.
->
-> ```powershell
-> irm https://raw.githubusercontent.com/CITE-HMS/cite-cli/main/scripts/cleanup-station.ps1 | iex
-> ```
-
 ### Before you start
 
 Have these two ready — [doing it by hand](#3-station-setup-by-hand) needs both every time. The script needs your admin account's password on every run (Windows can check a password you type but never hand back the real one, so there's no way to skip re-typing it — it's needed even though you're already signed in as that account, because "run whether logged on or not" tasks always store it). The Gmail App Password is the exception: the script only asks for it if one isn't already set machine-wide, or if you choose to replace it — so keep it ready for the first run, or any run where you want to rotate it.
@@ -123,7 +117,7 @@ The three steps it prints, in order:
 Re-running it on a station that is already set up is safe and is the normal way to
 apply an update: tasks are replaced in place.
 
-If a station still has old `cite-cli sync` or `cite-cli lock-on-logon` tasks — left over from the old `cite-automation` setup — the script warns about them as leftover tasks rather than touching them; run [`cleanup-station.ps1`](./scripts/cleanup-station.ps1) to remove them.
+If a station still has old `cite-cli sync` or `cite-cli lock-on-logon` tasks — left over from an earlier setup — the script warns about them as leftover tasks rather than touching them; remove them from Task Scheduler if you no longer need them.
 
 If one station needs different values — another retention window, a different email — edit the constants at the top of the script before running it:
 
@@ -267,8 +261,6 @@ Now go through [Verify the station](#verify-the-station).
 ### Undoing it
 
 **Remove the tasks:** delete `cite-cli clean` and `cite-cli renew` from Task Scheduler.
-
-If the station still carries the *old* `cite-automation` setup — auto-login, the lock watchdog, and a separate account — use [`cleanup-station.ps1`](./scripts/cleanup-station.ps1) instead of undoing that by hand; it removes all of it, including the account, in one run.
 
 ---
 

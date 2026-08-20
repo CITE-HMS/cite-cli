@@ -226,5 +226,5 @@ else {
     Ok "account '$AutomationAccount' already gone"
 }
 
-Write-Host "`nCleanup complete. Run setup-station.ps1 next to recreate $AutomationAccount" -ForegroundColor Green
-Write-Host "and the 'cite-cli clean' / 'cite-cli renew' tasks.`n" -ForegroundColor Green
+Write-Host "`nCleanup complete. Run setup-station.ps1 next, signed in as whichever admin" -ForegroundColor Green
+Write-Host "account should own 'cite-cli clean' and 'cite-cli renew' from now on.`n" -ForegroundColor Green
