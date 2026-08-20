@@ -8,12 +8,15 @@
 # updated license, run `cite sync` to apply it.
 #
 # Removes:
-#   1. the 'cite-cli sync' and 'cite-cli lock-on-logon' scheduled tasks (and
+#   1. any active cite-automation session (it was likely auto-logged-in and
+#      has been signed in since the last boot) - needed so its profile files
+#      aren't still locked by the time steps 4 and 5 touch them
+#   2. the 'cite-cli sync' and 'cite-cli lock-on-logon' scheduled tasks (and
 #      any leftover 'cite-cli-bootstrap-temp'), and stops a running watchdog
-#   2. auto-login for cite-automation (Winlogon keys + the LSA secret)
-#   3. the lock watchdog: its Run key and screen-saver settings inside
+#   3. auto-login for cite-automation (Winlogon keys + the LSA secret)
+#   4. the lock watchdog: its Run key and screen-saver settings inside
 #      cite-automation's profile, and its script files under ProgramData
-#   4. the cite-automation account itself, including its profile folder
+#   5. the cite-automation account itself, including its profile folder
 #
 # Leaves alone: the CITE_ALERT_* machine-wide env vars and the 'cite-cli
 # clean' task. The old 'cite-cli renew' task (still registered to run as
@@ -63,8 +66,37 @@ Write-Host "  Leaves 'cite-cli clean' and the CITE_ALERT_* variables alone."
 Write-Host "  Run setup-station.ps1 afterwards, signed in as whichever admin"
 Write-Host "  account should own both tasks from now on."
 
-# --- 1. retired scheduled tasks --------------------------------------------#
-Phase '1/4  retired scheduled tasks'
+# --- 1. sign out any active session -----------------------------------------#
+Phase '1/5  sign out any active session'
+
+# Auto-login meant this account has likely been signed in continuously since
+# the station's last boot - stopping the watchdog process below only kills
+# what was re-locking the screen, not the session itself. A live session
+# keeps its profile files (NTUSER.DAT, etc.) locked, which would otherwise
+# make both the registry-hive edit in step 4/5 and the profile removal in
+# step 5/5 fail partway with "in use" errors.
+# quser's SESSIONNAME column is blank for a disconnected session, which
+# shifts the remaining columns left - match the numeric ID directly instead
+# of counting whitespace-separated fields.
+$loggedOff = 0
+$quserLines = quser $AutomationAccount 2>$null
+if ($LASTEXITCODE -eq 0) {
+    foreach ($line in ($quserLines | Select-Object -Skip 1)) {
+        if ($line -match '^\s*>?\S+\s+(?:\S+\s+)?(\d+)\s+\S+') {
+            & logoff.exe $Matches[1] 2>&1 | Out-Null
+            $loggedOff++
+        }
+    }
+}
+if ($loggedOff) {
+    Ok "signed $AutomationAccount out of $loggedOff session(s)"
+    Note 'waiting for Windows to release its profile files...'
+    Start-Sleep -Seconds 5
+}
+else { Ok "$AutomationAccount has no active session" }
+
+# --- 2. retired scheduled tasks ----------------------------------------------#
+Phase '2/5  retired scheduled tasks'
 
 $running = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like '*cite-lock-watchdog*' })
@@ -80,8 +112,8 @@ foreach ($name in 'cite-cli sync', 'cite-cli lock-on-logon', 'cite-cli-bootstrap
     else { Ok "task '$name' already gone" }
 }
 
-# --- 2. auto-login ----------------------------------------------------------#
-Phase '2/4  auto-login'
+# --- 3. auto-login ----------------------------------------------------------#
+Phase '3/5  auto-login'
 
 $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 Set-ItemProperty $winlogon -Name AutoAdminLogon -Value '0' -Type String
@@ -147,8 +179,8 @@ catch {
     Note 'harmless if there was none to remove - AutoAdminLogon is already off above either way'
 }
 
-# --- 3. the lock watchdog ---------------------------------------------------#
-Phase '3/4  lock watchdog'
+# --- 4. the lock watchdog ----------------------------------------------------#
+Phase '4/5  lock watchdog'
 
 $sid = $null
 try {
@@ -202,8 +234,8 @@ foreach ($f in 'cite-lock-watchdog.ps1', 'lock-paused', 'setup-user-bootstrap.ps
     if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue; Ok "removed $p" }
 }
 
-# --- 4. the cite-automation account -----------------------------------------#
-Phase '4/4  cite-automation account'
+# --- 5. the cite-automation account -------------------------------------------#
+Phase '5/5  cite-automation account'
 
 if (Get-LocalUser -Name $AutomationAccount -ErrorAction SilentlyContinue) {
     # Resolve the profile path via its SID before removing the account - once
