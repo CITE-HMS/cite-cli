@@ -104,9 +104,18 @@ foreach ($p in $running) { Stop-Process -Id $p.ProcessId -Force -ErrorAction Sil
 if ($running) { Ok "stopped $($running.Count) running lock watchdog process(es)" }
 else { Ok 'no lock watchdog process was running' }
 
+# Get-ScheduledTask -TaskName alone can miss a task that is genuinely there -
+# the PPMS-RT-Client check further down this project's history hit the same
+# thing for subfolder tasks. Enumerate every task once instead and filter by
+# name client-side, then unregister using the exact TaskPath that was found,
+# rather than trusting the parameterized lookup a second time.
+$allTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue)
 foreach ($name in 'cite-cli sync', 'cite-cli lock-on-logon', 'cite-cli-bootstrap-temp') {
-    if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+    $found = @($allTasks | Where-Object { $_.TaskName -eq $name })
+    if ($found) {
+        foreach ($t in $found) {
+            Unregister-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Confirm:$false -ErrorAction SilentlyContinue
+        }
         Ok "removed task '$name'"
     }
     else { Ok "task '$name' already gone" }
@@ -149,13 +158,16 @@ public static class CiteLsaRemove
     [DllImport("advapi32.dll")] private static extern uint LsaClose(IntPtr ObjectHandle);
     [DllImport("advapi32.dll")] private static extern int LsaNtStatusToWinError(uint Status);
 
-    public static void Remove(string key)
+    // Returns the win32 error (0 = success, 2 = ERROR_FILE_NOT_FOUND when
+    // there was no secret to delete) instead of throwing, so the caller can
+    // tell "already gone" apart from a real failure.
+    public static int Remove(string key)
     {
         LSA_OBJECT_ATTRIBUTES attrs = new LSA_OBJECT_ATTRIBUTES();
         attrs.Length = Marshal.SizeOf(typeof(LSA_OBJECT_ATTRIBUTES));
         IntPtr policy;
         uint st = LsaOpenPolicy(IntPtr.Zero, ref attrs, 0x00000024, out policy);
-        if (st != 0) throw new Exception("LsaOpenPolicy failed, win32 error " + LsaNtStatusToWinError(st));
+        if (st != 0) return LsaNtStatusToWinError(st);
         LSA_UNICODE_STRING k = new LSA_UNICODE_STRING();
         k.Buffer = Marshal.StringToHGlobalUni(key);
         k.Length = (ushort)(key.Length * 2);
@@ -163,7 +175,7 @@ public static class CiteLsaRemove
         try
         {
             st = LsaDeletePrivateData(policy, ref k, IntPtr.Zero);
-            if (st != 0) throw new Exception("LsaStorePrivateData failed, win32 error " + LsaNtStatusToWinError(st));
+            return LsaNtStatusToWinError(st);
         }
         finally { Marshal.FreeHGlobal(k.Buffer); LsaClose(policy); }
     }
@@ -171,12 +183,13 @@ public static class CiteLsaRemove
 '@
 }
 try {
-    [CiteLsaRemove]::Remove('DefaultPassword')
-    Ok 'auto-login LSA secret removed'
+    $lsaError = [CiteLsaRemove]::Remove('DefaultPassword')
+    if ($lsaError -eq 0) { Ok 'auto-login LSA secret removed' }
+    elseif ($lsaError -eq 2) { Ok 'no auto-login LSA secret to remove' }
+    else { Warn "could not remove the LSA secret (win32 error $lsaError)" }
 }
 catch {
     Warn "could not remove the LSA secret: $($_.Exception.Message)"
-    Note 'harmless if there was none to remove - AutoAdminLogon is already off above either way'
 }
 
 # --- 4. the lock watchdog ----------------------------------------------------#
@@ -207,7 +220,7 @@ if ($sid) {
             else { $hivePath = "Registry::HKEY_USERS\$loadedKey" }
         }
         else {
-            Note "$AutomationAccount has no profile yet - nothing to clean up here"
+            Ok "$AutomationAccount has no profile yet - nothing to clean up here"
         }
     }
     if (Test-Path $hivePath) {
@@ -228,11 +241,18 @@ if ($sid) {
         if ($LASTEXITCODE -ne 0) { Warn 'could not unload the temporary hive copy - a reboot will clear it' }
     }
 }
+else { Ok "$AutomationAccount no longer exists - nothing to clean up in its registry hive" }
 
+$removedAny = $false
 foreach ($f in 'cite-lock-watchdog.ps1', 'lock-paused', 'setup-user-bootstrap.ps1') {
     $p = "$env:ProgramData\cite-cli\$f"
-    if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue; Ok "removed $p" }
+    if (Test-Path $p) {
+        Remove-Item $p -Force -ErrorAction SilentlyContinue
+        Ok "removed $p"
+        $removedAny = $true
+    }
 }
+if (-not $removedAny) { Ok 'no lock watchdog files left to remove' }
 
 # --- 5. the cite-automation account -------------------------------------------#
 Phase '5/5  cite-automation account'
@@ -248,18 +268,24 @@ if (Get-LocalUser -Name $AutomationAccount -ErrorAction SilentlyContinue) {
     # instead - expected, since that is the very next step after this script.
     Remove-LocalUser -Name $AutomationAccount
     Ok "account '$AutomationAccount' removed"
-    if (Test-Path $userProfile) {
-        Remove-Item -Recurse -Force $userProfile -ErrorAction SilentlyContinue
-        if (Test-Path $userProfile) {
-            Warn "could not fully remove $userProfile - some files may still be in use"
-            Note 'sign the account out (or reboot) and re-run this script to finish removing it'
-        }
-        else { Ok "profile folder removed: $userProfile" }
-    }
 }
 else {
     Ok "account '$AutomationAccount' already gone"
+    # A prior run's profile deletion below can fail (files still locked by a
+    # session that wasn't yet signed out) while the account removal itself
+    # still went through - retry the folder even when there's no account left
+    # to resolve its SID from, using the same default path Windows uses.
+    $userProfile = "$env:SystemDrive\Users\$AutomationAccount"
 }
+if (Test-Path $userProfile) {
+    Remove-Item -Recurse -Force $userProfile -ErrorAction SilentlyContinue
+    if (Test-Path $userProfile) {
+        Warn "could not fully remove $userProfile - some files may still be in use"
+        Note 'sign the account out (or reboot) and re-run this script to finish removing it'
+    }
+    else { Ok "profile folder removed: $userProfile" }
+}
+else { Ok 'no leftover profile folder to remove' }
 
 Write-Host "`nCleanup complete. Run setup-station.ps1 next, signed in as whichever admin" -ForegroundColor Green
 Write-Host "account should own 'cite-cli clean' and 'cite-cli renew' from now on.`n" -ForegroundColor Green
