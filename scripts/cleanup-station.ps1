@@ -44,6 +44,20 @@ function Ok { param($m) Write-Host "  [ok] $m" -ForegroundColor Green }
 function Warn { param($m) Write-Host "  [!!] $m" -ForegroundColor Yellow }
 function Note { param($m) Write-Host "       $m" -ForegroundColor Yellow }
 
+function Invoke-Native {
+    # Runs a native command with stderr merged into its output, inside an
+    # isolated scope with $ErrorActionPreference relaxed just for this call.
+    # ANY native command that writes non-empty stderr otherwise becomes a
+    # terminating exception under this script's global 'Stop' preference -
+    # regardless of 2>&1 vs 2>$null, and regardless of whether the command
+    # is actually failing (quser saying "no session" is not an error; it
+    # still crashed the script the same way takeown hitting a locked-down
+    # folder did). $LASTEXITCODE is set as usual by the native command and
+    # stays readable by the caller after this returns.
+    param([Parameter(Mandatory)][string]$Exe, [string[]]$ExeArgs = @())
+    & { $ErrorActionPreference = 'SilentlyContinue'; & $Exe @ExeArgs 2>&1 }
+}
+
 function Get-ProfilePath {
     param($name)
     try {
@@ -78,19 +92,12 @@ Phase '1/5  sign out any active session'
 # quser's SESSIONNAME column is blank for a disconnected session, which
 # shifts the remaining columns left - match the numeric ID directly instead
 # of counting whitespace-separated fields.
-# quser writes "No User exists for ..." to its own stderr when the account
-# has no session - under Windows PowerShell 5.1 that text becomes a
-# terminating error under $ErrorActionPreference = 'Stop' even with 2>$null,
-# since the redirect only affects PowerShell's error stream, not the
-# synthetic ErrorRecord native stderr text gets wrapped into. Run it inside
-# an isolated scope with the preference relaxed just for this call so a
-# normal "no session" outcome can never abort the whole script.
 $loggedOff = 0
-$quserLines = & { $ErrorActionPreference = 'SilentlyContinue'; quser $AutomationAccount 2>$null }
+$quserLines = Invoke-Native quser @($AutomationAccount)
 if ($LASTEXITCODE -eq 0) {
     foreach ($line in ($quserLines | Select-Object -Skip 1)) {
         if ($line -match '^\s*>?\S+\s+(?:\S+\s+)?(\d+)\s+\S+') {
-            & logoff.exe $Matches[1] 2>&1 | Out-Null
+            Invoke-Native logoff.exe @($Matches[1]) | Out-Null
             $loggedOff++
         }
     }
@@ -216,7 +223,7 @@ Phase '4/5  lock watchdog'
 if (Test-Path 'Registry::HKEY_USERS\CiteCleanupHive') {
     [gc]::Collect()
     [gc]::WaitForPendingFinalizers()
-    & reg.exe unload 'HKU\CiteCleanupHive' 2>&1 | Out-Null
+    Invoke-Native reg.exe @('unload', 'HKU\CiteCleanupHive') | Out-Null
     if ($LASTEXITCODE -eq 0) { Ok 'released a registry hive left mounted by an earlier run' }
     else { Warn 'a registry hive from an earlier run is still mounted (HKU\CiteCleanupHive) - a reboot will clear it' }
 }
@@ -237,7 +244,7 @@ if ($sid) {
         $ntuser = Join-Path (Get-ProfilePath $AutomationAccount) 'NTUSER.DAT'
         if (Test-Path $ntuser) {
             $loadedKey = 'CiteCleanupHive'
-            & reg.exe load "HKU\$loadedKey" $ntuser 2>&1 | Out-Null
+            Invoke-Native reg.exe @('load', "HKU\$loadedKey", $ntuser) | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 $loadedKey = $null
                 Warn "could not load $AutomationAccount's registry hive - is it signed in right now?"
@@ -263,7 +270,7 @@ if ($sid) {
         # `reg unload` refuses.
         [gc]::Collect()
         [gc]::WaitForPendingFinalizers()
-        & reg.exe unload "HKU\$loadedKey" 2>&1 | Out-Null
+        Invoke-Native reg.exe @('unload', "HKU\$loadedKey") | Out-Null
         if ($LASTEXITCODE -ne 0) { Warn 'could not unload the temporary hive copy - a reboot will clear it' }
     }
 }
@@ -310,8 +317,8 @@ if (Test-Path $userProfile) {
     # explicitly takes ownership first. /A assigns ownership to the
     # Administrators group rather than just this session's user, so it stays
     # accessible regardless of who runs this script next time.
-    & takeown.exe /F $userProfile /R /D Y /A 2>&1 | Out-Null
-    & icacls.exe $userProfile /grant '*S-1-5-32-544:(OI)(CI)F' /T /C /Q 2>&1 | Out-Null
+    Invoke-Native takeown.exe @('/F', $userProfile, '/R', '/D', 'Y', '/A') | Out-Null
+    Invoke-Native icacls.exe @($userProfile, '/grant', '*S-1-5-32-544:(OI)(CI)F', '/T', '/C', '/Q') | Out-Null
     Remove-Item -Recurse -Force $userProfile -ErrorAction SilentlyContinue
     if (Test-Path $userProfile) {
         Warn "could not fully remove $userProfile - some files may still be in use"
