@@ -781,7 +781,7 @@ def _pending(submitted_days: int, attempted_days: int | None = None) -> RenewSta
 
 
 def test_license_sync_overdue_when_never_attempted() -> None:
-    """Nobody logged on -> `cite sync` never runs -> no attempt is ever recorded."""
+    """Nobody runs `cite sync` -> no attempt is ever recorded."""
     assert license_sync_overdue(_pending(submitted_days=5))
     assert not license_sync_overdue(_pending(submitted_days=3))
 
@@ -1665,9 +1665,9 @@ def test_cli_renew_pending_submission_near_expiry_sends_urgency(
 def test_cli_renew_warns_when_sync_never_ran(
     fake_smtp, c2l_file: Path, tmp_state_path: Path, tmp_last_notified_path, monkeypatch
 ) -> None:
-    """A station where nobody logs on never runs `cite sync`, and Task
-    Scheduler reports nothing because the task never starts. The headless
-    `renew` must raise the flag itself, well before the 4-day urgency alerts.
+    """`cite sync` is run by hand, so nothing reports it when nobody signs in
+    to run it. The headless `renew` must raise the flag itself, well before
+    the 4-day urgency alerts.
     """
     _set_alert_creds(monkeypatch)
     hasp_id = "159918744"
@@ -1693,7 +1693,8 @@ def test_cli_renew_warns_when_sync_never_ran(
     sent = fake_smtp.instances[0].sent
     assert "renew synchronization failed" in sent["Subject"]
     body = sent.get_content()
-    assert "only runs while a Windows user is logged on" in body
+    assert "run `cite sync`" in body
+    assert "'cite-cli sync' scheduled task" not in body
 
     # Second run the next night is inside the 48 h throttle: no new email.
     second = _invoke_nikon_renew(c2l_file)

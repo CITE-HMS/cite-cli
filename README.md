@@ -481,7 +481,7 @@ cite clean [DIRECTORY] [OPTIONS]
 
 ### `cite renew`
 
-Monitor the NIS-Elements Time-DEMO license, submit to Nikon within the renewal window, and send the success email only after ACC reports a later expiration. GUI synchronization is disabled by default so the command can run without a logged-on Windows session. Also alerts when the separate `cite sync` task has not run for 4 days while a submission is pending.
+Monitor the NIS-Elements Time-DEMO license, submit to Nikon within the renewal window, and send the success email only after ACC reports a later expiration. GUI synchronization is disabled by default so the command can run without a logged-on Windows session. Also alerts when `cite sync` (run by hand) has not been run for 4 days while a submission is pending.
 
 ```
 cite renew --email EMAIL --full-name NAME --url TARGET [OPTIONS]

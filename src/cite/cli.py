@@ -594,15 +594,15 @@ def renew(
     2. With `--sync`, pending Nikon submissions are synchronized through a
        hidden License Manager after 2 days, then every 2 days until ACC
        confirms that the expiration advanced. Synchronization is disabled by
-       default; schedule `cite sync` separately in an interactive session.
+       default; run `cite sync` by hand in an interactive session.
 
     3. Submit phase: read the dongle's expiration via ACC, check the
        renewal window, dedup against any prior submission, and POST a fresh
        `.c2l` to Nikon if needed.
 
     4. While a submission is pending, alert if `cite sync` has not recorded
-       an attempt in 4 days. That task needs a logged-on session, so a
-       station where nobody signs in never runs it and never reports it.
+       an attempt in 4 days. It is run by hand in a logged-on session, so
+       nothing reports it when nobody has signed in to run it.
     """
     with _alert_on_failure("renew"):
         # Detect an already-completed/manual renewal before attempting another
@@ -1023,10 +1023,10 @@ def _clear_stale_renew_state_if_renewed() -> None:
 def _maybe_warn_sync_not_running(state) -> None:  # type: ignore[no-untyped-def]
     """Alert when `cite sync` has not run while a submission is pending.
 
-    `cite sync` needs a logged-on Windows session. On a station where nobody
-    signs in, Task Scheduler simply never starts it — so it cannot report its
-    own failure, and the pending renewal would sit unapplied until the
-    imminent-expiry alerts start at 4 days out. This runs from the headless
+    `cite sync` needs a logged-on Windows session, so it is run by hand rather
+    than scheduled. Nothing else prompts anyone to run it, and the pending
+    renewal would sit unapplied until the imminent-expiry alerts start at 4
+    days out. This runs from the headless
     `renew` task, which is the only one guaranteed to fire.
     """
     from cite._renew import (
@@ -1062,10 +1062,11 @@ def _maybe_warn_sync_not_running(state) -> None:  # type: ignore[no-untyped-def]
         RuntimeError(
             f"A Nikon renewal submitted on "
             f"{state.submitted_at.date().isoformat()} is still pending, but "
-            f"License Manager synchronization {ran}. `cite sync` only runs "
-            "while a Windows user is logged on: check that the station's "
-            "account is signed in and that the 'cite-cli sync' scheduled task "
-            "is enabled. Until it runs, the renewal cannot be applied."
+            f"License Manager synchronization {ran}. Synchronization is not "
+            "scheduled and needs an interactive session: sign in to the "
+            "station's admin account and run `cite sync`, or open License "
+            "Manager (%PUBLIC%\\NIS_Elements\\licmgr_s.exe) and click "
+            "Synchronize. Until then, the renewal cannot be applied."
         ),
     )
     if delivered:

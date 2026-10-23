@@ -49,7 +49,7 @@ LICENSE_SYNC_INTERVAL = timedelta(days=2)
 # confirming a new expiration before it's treated as stalled and alerted on.
 LICENSE_SYNC_STALL_THRESHOLD = timedelta(days=6)
 # Two consecutive missed retry windows: `cite sync` is not running at all,
-# usually because nobody is logged on to the station.
+# usually because nobody has signed in to run it by hand.
 LICENSE_SYNC_MISSING_THRESHOLD = timedelta(days=4)
 # The condition persists for days, so nag on alternate nights rather than
 # every night — `renew` already emails daily once expiry is imminent.
